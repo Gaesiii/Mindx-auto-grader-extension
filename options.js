@@ -50,7 +50,10 @@ const btnSaveData = document.getElementById('btnSaveData');
 const btnDeleteData = document.getElementById('btnDeleteData');
 const cloudStatus = document.getElementById('cloudStatus');
 
-const DEFAULT_PROMPT = `Bạn là giáo viên dạy lập trình thân thiện. Dựa vào từ khóa: "{keywords}". Viết thành 3 ý: Điểm mạnh, Điểm cần cải thiện, Lời khuyên.`;
+const DEFAULT_PROMPT = `Bạn là thầy giáo dạy lập trình thân thiện và chuyên nghiệp. Dựa vào các từ khóa của học sinh này: "{keywords}".
+Hãy viết 1 đoạn nhận xét chung dành cho phụ huynh, trình bày rõ ràng nhẹ nhàng, không dùng từ gây phản cảm hoặc chất vấn học viên. Dùng nói giảm nói tránh sao cho nhẹ nhưng vẫn truyền đạt được ý của keywords. và tối ưu nhất là khoảng 80 chữ.viết ngắn gọn , không cần kính gửi gì như viết thư. truyền đạt ý chính là đủ:
+ví dụ:
+Con là học sinh hòa đồng, luôn mang lại năng lượng tích cực cho lớp học. Bên cạnh đó, con cũng đã có sự tiến bộ nhất định khi bắt đầu cố gắng tự giải quyết một số bài tập. Tuy nhiên, con vẫn còn phụ thuộc vào công cụ hỗ trợ. Thầy mong con luyện tập nghiêm túc hơn, tự mình tư duy và làm bài để củng cố kiến thức và phát triển tư duy lập trình một cách bền vững..`;
 
 chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt'], (result) => {
   if (result.pasteKey) pasteInput.value = result.pasteKey;
