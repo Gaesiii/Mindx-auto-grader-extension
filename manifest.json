@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "your mom chung may beo - promaxxxxx",
+  "version": "1.0",
+  "description": "tool lọ",
+  "permissions": [
+    "storage",
+    "clipboardWrite",
+    "clipboardRead"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Mở khay lịch sử"
+  },
+  "icons": {
+    "16": "1.jfif",
+    "32": "1.jfif",
+    "48": "1.jfif",
+    "128": "1.jfif"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
+  "commands": {
+    "macro-paste": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+V",
+        "mac": "Command+Shift+V"
+      },
+      "description": "Paste văn bản gần nhất từ khay tạm ra màn hình"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+  
+}
