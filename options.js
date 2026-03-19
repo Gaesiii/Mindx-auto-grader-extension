@@ -55,6 +55,33 @@ Hãy viết 1 đoạn nhận xét chung dành cho phụ huynh, trình bày rõ r
 ví dụ:
 Con là học sinh hòa đồng, luôn mang lại năng lượng tích cực cho lớp học. Bên cạnh đó, con cũng đã có sự tiến bộ nhất định khi bắt đầu cố gắng tự giải quyết một số bài tập. Tuy nhiên, con vẫn còn phụ thuộc vào công cụ hỗ trợ. Thầy mong con luyện tập nghiêm túc hơn, tự mình tư duy và làm bài để củng cố kiến thức và phát triển tư duy lập trình một cách bền vững..`;
 
+// ==========================================
+// HỆ THỐNG GIỮ TRẠNG THÁI CÂY THƯ MỤC
+// ==========================================
+function saveTreeState() {
+  let openNodes = [];
+  document.querySelectorAll('details[open]').forEach(details => {
+      if (details.id) openNodes.push(details.id);
+  });
+  localStorage.setItem('acp_tree_state', JSON.stringify(openNodes));
+}
+
+function restoreTreeState() {
+  let state = localStorage.getItem('acp_tree_state');
+  if (state) {
+      let openNodes = JSON.parse(state);
+      openNodes.forEach(id => {
+          let details = document.getElementById(id);
+          if (details) details.open = true;
+      });
+  }
+  
+  if (activeNode) {
+      let activeItem = document.getElementById(`node-${activeNode.subject}-${activeNode.course}-${activeNode.lesson}`);
+      if (activeItem) activeItem.classList.add('active');
+  }
+}
+
 chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt'], (result) => {
   if (result.pasteKey) pasteInput.value = result.pasteKey;
   if (result.searchKey) searchInput.value = result.searchKey;
@@ -98,17 +125,18 @@ saveAiBtn.addEventListener('click', () => {
 });
 
 // ===============================================
-// CORE ENGINE: XỬ LÝ DỮ LIỆU CLOUD (ĐÃ FIX LỖI XUNG ĐỘT ID)
+// CORE ENGINE: XỬ LÝ DỮ LIỆU CLOUD (ĐÃ FIX XUNG ĐỘT)
 // ===============================================
 
 async function fetchAllData() {
+  saveTreeState(); // Lưu trạng thái trước khi xóa HTML cũ
+  
   treeContainer.innerHTML = '<div style="text-align:center; padding:50px 0; color:#888;">⏳ Đang đồng bộ dữ liệu Cloud...</div>';
   try {
     const requests = Object.values(API_LINKS).map(url => 
       fetch(url)
         .then(res => res.ok ? res.json() : [])
         .then(data => {
-           // QUAN TRỌNG: Gắn nhãn xuất xứ (URL) vào từng bài báo cáo để chống trùng ID
            if (Array.isArray(data)) return data.map(item => ({ ...item, _apiOrigin: url }));
            return [];
         })
@@ -125,15 +153,16 @@ async function fetchAllData() {
 function renderTree() {
   let html = '';
   for (const [subject, data] of Object.entries(COURSE_TREE)) {
-    html += `<details><summary>📁 Môn ${subject}</summary><div class="tree-content">`;
+    // Đã thêm id để theo dõi thẻ details
+    html += `<details id="details-${subject}"><summary>📁 Môn ${subject}</summary><div class="tree-content">`;
     for (const course of data.courses) {
-      html += `<details><summary class="crs-summary">🎓 Khóa ${course}</summary><div class="tree-content">`;
+      // Đã thêm id cho cấp khóa học
+      html += `<details id="details-${subject}-${course}"><summary class="crs-summary">🎓 Khóa ${course}</summary><div class="tree-content">`;
       for (let i = 1; i <= 14; i++) {
         const expectedTitle = `${subject} - ${course} - Buổi ${i}`;
         
         const t = templates.find(x => {
           if (!x.title) return false;
-          // CHỈ TÌM TRONG ĐÚNG SERVER CỦA MÔN NÀY (Chống nhận diện nhầm chéo máy chủ)
           if (x._apiOrigin !== COURSE_TREE[subject].api) return false;
           
           const titleClean = x.title.trim().toLowerCase();
@@ -173,6 +202,14 @@ function renderTree() {
       openEditor(s, c, l, id);
     });
   });
+
+  // Lưu trạng thái ngay khi có bất kỳ thao tác đóng mở nào
+  document.querySelectorAll('details').forEach(details => {
+      details.addEventListener('toggle', saveTreeState);
+  });
+
+  // Tự động khôi phục giao diện đã lưu
+  restoreTreeState();
 }
 
 function openEditor(subject, course, lesson, existingId) {
@@ -186,7 +223,6 @@ function openEditor(subject, course, lesson, existingId) {
   lblEditorPath.textContent = activeNode.title;
   
   if (existingId) {
-    // TÌM CHÍNH XÁC ID VÀ ĐÚNG NGUỒN MÁY CHỦ (CHỐNG LỖI HIỂN THỊ LỆCH)
     const t = templates.find(x => x.id === existingId && x._apiOrigin === targetApi);
     quill.root.innerHTML = t ? t.content : '';
     btnSaveData.innerHTML = '💾 Cập nhật Báo Cáo';
