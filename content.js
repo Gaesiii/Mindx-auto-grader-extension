@@ -8,7 +8,7 @@ let cloudApiUrl = '';
 let autoTickScores = { gioi: [5,5,5,5,5,5,5], kha: [4,4,4,4,4,4,4], tb: [3,3,3,3,3,3,3] };
 
 // 🌐 ĐƯỜNG DẪN GỌI VỀ WEB APP PYTHON (LOCALHOST)
-const WEB_APP_API_URL = "https://lms-performance-tracker-production.up.railway.app/api/generate";
+const WEB_APP_API_URL = "lms-performance-tracker.vercel.app/api/generate";
 
 // 🎯 RADAR GHI NHỚ VỊ TRÍ ZALO
 let lastActiveInput = null;
