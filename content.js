@@ -9,10 +9,15 @@ let autoTickScores = { gioi: [5,5,5,5,5,5,5], kha: [4,4,4,4,4,4,4], tb: [3,3,3,3
 
 // 🌐 ĐƯỜNG DẪN GỌI VỀ WEB APP PYTHON (LOCALHOST)
 const WEB_APP_API_URL = "https://lms-performance-tracker.vercel.app/api/generate";
+const ACP_EVAL_PANEL_ID = 'acp-eval-panel';
+const ACP_EVAL_REOPEN_ID = 'acp-eval-reopen';
+const ACP_MIN_RADIO_COUNT = 20;
 
 // 🎯 RADAR GHI NHỚ VỊ TRÍ ZALO
 let lastActiveInput = null;
 let lastSavedRange = null;
+let evalDialogCounter = 0;
+let evalRefreshScheduled = false;
 
 const CLOUD_APIS = [
   atob("aHR0cHM6Ly82OWI5NjZlZWU2OTY1M2ZmZTZhNzk2ZDQubW9ja2FwaS5pby90ZW1wbGF0ZXM="),
@@ -30,7 +35,7 @@ const COURSE_TREE = {
   "Python":  { courses: ["PTB", "PTA", "PTI"] }
 };
 
-function parseScoreString(str) { return str.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)); }
+function parseScoreString(str) { return String(str || '').split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)); }
 
 chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'searchKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt'], (result) => {
   isExtensionEnabled = result.isExtensionEnabled !== false;
@@ -47,7 +52,10 @@ chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'search
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'local') {
-    if (changes.isExtensionEnabled) isExtensionEnabled = changes.isExtensionEnabled.newValue;
+    if (changes.isExtensionEnabled) {
+      isExtensionEnabled = changes.isExtensionEnabled.newValue;
+      scheduleEvaluationPanelRefresh();
+    }
     if (changes.pasteKey) pasteKey = changes.pasteKey.newValue;
     if (changes.toggleKey) toggleKey = changes.toggleKey.newValue;
     if (changes.searchKey) searchKey = changes.searchKey.newValue;
@@ -409,6 +417,299 @@ async function generateAIComment() {
   finally { btn.innerHTML = "✨ Nhờ AI viết nhận xét"; btn.style.opacity = '1'; btn.disabled = false; }
 }
 
-const observer = new MutationObserver(() => injectEvaluationPanel());
+const observer = new MutationObserver(() => scheduleEvaluationPanelRefresh());
 observer.observe(document.body, { childList: true, subtree: true });
-setTimeout(injectEvaluationPanel, 1500);
+setTimeout(scheduleEvaluationPanelRefresh, 1500);
+
+function isElementVisible(el) {
+  if (!(el instanceof HTMLElement)) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  return el.getClientRects().length > 0;
+}
+
+function getVisibleEvaluationRadios() {
+  return Array.from(document.querySelectorAll('input[type="radio"]')).filter(isElementVisible);
+}
+
+function getVisibleQuillEditors() {
+  return Array.from(document.querySelectorAll('.ql-editor')).filter(isElementVisible);
+}
+
+function ensureDialogIdentity(dialog) {
+  if (!(dialog instanceof HTMLElement)) return 'page-root';
+  if (!dialog.dataset.acpDialogId) {
+    evalDialogCounter += 1;
+    dialog.dataset.acpDialogId = `acp-dialog-${evalDialogCounter}`;
+  }
+  return dialog.dataset.acpDialogId;
+}
+
+function getEvaluationContext() {
+  const radios = getVisibleEvaluationRadios();
+  const editors = getVisibleQuillEditors();
+  if (radios.length < ACP_MIN_RADIO_COUNT || editors.length === 0) return null;
+
+  const anchorEditor = editors[editors.length - 1];
+  const dialog = anchorEditor.closest('[role="dialog"]');
+  const container = dialog || document.body;
+  const dialogId = ensureDialogIdentity(dialog);
+  const key = `${location.pathname}|${dialogId}|r${radios.length}|e${editors.length}`;
+  return { radios, editors, container, key };
+}
+
+function getEvaluationPanel() {
+  return document.getElementById(ACP_EVAL_PANEL_ID);
+}
+
+function getEvaluationReopenButton() {
+  return document.getElementById(ACP_EVAL_REOPEN_ID);
+}
+
+function hideEvaluationReopenButton() {
+  const reopen = getEvaluationReopenButton();
+  if (reopen) reopen.remove();
+}
+
+function showEvaluationReopenButton() {
+  if (getEvaluationReopenButton()) return;
+
+  const reopen = document.createElement('button');
+  reopen.id = ACP_EVAL_REOPEN_ID;
+  reopen.type = 'button';
+  reopen.textContent = 'Mo Auto Tick';
+  reopen.style.cssText = `position: fixed; right: 20px; bottom: 24px; z-index: 2147483647; border: 1px solid #0f4db8; background: #1a73e8; color: #fff; border-radius: 999px; padding: 8px 14px; font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: 0 8px 20px rgba(26,115,232,0.35);`;
+  reopen.addEventListener('click', () => {
+    const panel = getEvaluationPanel();
+    if (!panel) {
+      scheduleEvaluationPanelRefresh();
+      return;
+    }
+    panel.dataset.closed = '0';
+    panel.style.display = 'block';
+    hideEvaluationReopenButton();
+  });
+  document.body.appendChild(reopen);
+}
+
+function closeEvaluationPanel(panel) {
+  if (!panel) return;
+  panel.dataset.closed = '1';
+  panel.dataset.closedContext = panel.dataset.contextKey || '';
+  panel.style.display = 'none';
+  showEvaluationReopenButton();
+}
+
+function buildEvaluationPanel(contextKey) {
+  const panel = document.createElement('div');
+  panel.id = ACP_EVAL_PANEL_ID;
+  panel.dataset.contextKey = contextKey;
+  panel.dataset.closed = '0';
+  panel.style.cssText = `position: fixed; top: 80px; right: 20px; width: min(320px, calc(100vw - 40px)); background: #ffffff; border-radius: 10px; box-shadow: 0 8px 25px rgba(0,0,0,0.15); z-index: 2147483647; padding: 14px; font-family: Arial, sans-serif; border: 1px solid #e0e0e0;`;
+  panel.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px;">
+      <h4 style="margin:0; color:#1a73e8; font-size:15px;">Auto Tick Diem LMS</h4>
+      <button id="acp-eval-close" type="button" style="background:transparent; border:none; color:#6b7280; font-size:12px; cursor:pointer;">Dong</button>
+    </div>
+    <div style="display:flex; gap:8px; margin-bottom:15px;">
+      <button id="btn-gioi" type="button" style="flex:1; background:#28a745; color:#fff; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">Gioi</button>
+      <button id="btn-kha" type="button" style="flex:1; background:#f6c000; color:#111; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">Kha</button>
+      <button id="btn-tb" type="button" style="flex:1; background:#dc3545; color:#fff; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">TB</button>
+    </div>
+    <div style="border-top:1px solid #eee; padding-top:12px;">
+      <label style="font-size:12px; font-weight:bold; color:#555;">Tao nhan xet chung (AI):</label>
+      <input type="text" id="ai-keywords" placeholder="VD: hieu bai, lam game nhanh..." style="width:100%; padding:10px; margin-top:4px; border:1px solid #ccc; border-radius:6px; box-sizing:border-box; outline:none; font-size:13px; color:#333;">
+      <button id="btn-gen-ai" type="button" style="width:100%; background:#1a73e8; color:#fff; border:none; padding:10px; border-radius:6px; cursor:pointer; margin-top:10px; font-weight:bold; transition:0.2s;">Nho AI viet nhan xet</button>
+    </div>
+  `;
+
+  ['mousedown', 'mouseup', 'click', 'keydown', 'focusin'].forEach((evt) => {
+    panel.addEventListener(evt, (e) => e.stopPropagation());
+  });
+
+  panel.querySelector('#acp-eval-close').addEventListener('click', () => closeEvaluationPanel(panel));
+  panel.querySelector('#btn-gioi').addEventListener('click', () => fillReactScores('gioi'));
+  panel.querySelector('#btn-kha').addEventListener('click', () => fillReactScores('kha'));
+  panel.querySelector('#btn-tb').addEventListener('click', () => fillReactScores('tb'));
+  panel.querySelector('#btn-gen-ai').addEventListener('click', generateAIComment);
+
+  return panel;
+}
+
+function scheduleEvaluationPanelRefresh() {
+  if (evalRefreshScheduled) return;
+  evalRefreshScheduled = true;
+  window.requestAnimationFrame(() => {
+    evalRefreshScheduled = false;
+    injectEvaluationPanel();
+  });
+}
+
+function injectEvaluationPanel() {
+  const panel = getEvaluationPanel();
+
+  if (!isExtensionEnabled) {
+    if (panel) panel.remove();
+    hideEvaluationReopenButton();
+    return;
+  }
+
+  const context = getEvaluationContext();
+  if (!context) {
+    if (panel) panel.remove();
+    hideEvaluationReopenButton();
+    return;
+  }
+
+  if (!panel) {
+    const createdPanel = buildEvaluationPanel(context.key);
+    context.container.appendChild(createdPanel);
+    hideEvaluationReopenButton();
+    return;
+  }
+
+  if (panel.parentElement !== context.container) {
+    context.container.appendChild(panel);
+  }
+
+  panel.dataset.contextKey = context.key;
+  if (panel.dataset.closed === '1') {
+    if (panel.dataset.closedContext !== context.key) {
+      panel.dataset.closed = '0';
+      panel.style.display = 'block';
+      hideEvaluationReopenButton();
+    } else {
+      showEvaluationReopenButton();
+    }
+    return;
+  }
+
+  panel.style.display = 'block';
+  hideEvaluationReopenButton();
+}
+
+function getWeightedRandomScore(level) {
+  const buckets = {
+    gioi: [
+      { score: 4, weight: 35 },
+      { score: 5, weight: 65 }
+    ],
+    kha: [
+      { score: 3, weight: 45 },
+      { score: 4, weight: 45 },
+      { score: 5, weight: 10 }
+    ],
+    tb: [
+      { score: 3, weight: 78 },
+      { score: 4, weight: 22 }
+    ]
+  };
+
+  const profile = buckets[level] || buckets.tb;
+  const totalWeight = profile.reduce((sum, item) => sum + item.weight, 0);
+  let roll = Math.random() * totalWeight;
+
+  for (const item of profile) {
+    roll -= item.weight;
+    if (roll <= 0) return item.score;
+  }
+  return profile[profile.length - 1].score;
+}
+
+function generateRandomScorePattern(level, criteriaCount) {
+  const count = Math.max(0, Number(criteriaCount) || 0);
+  return Array.from({ length: count }, () => getWeightedRandomScore(level));
+}
+
+function fillReactScores(level) {
+  const context = getEvaluationContext();
+  const allRadios = context ? context.radios : getVisibleEvaluationRadios();
+  const pointsPerCriteria = 5;
+  const criteriaCount = Math.floor(allRadios.length / pointsPerCriteria);
+
+  if (criteriaCount <= 0) {
+    showNotificationToast('Khong tim thay bang diem de auto tick');
+    return;
+  }
+
+  const scoresArray = generateRandomScorePattern(level, criteriaCount);
+  for (let i = 0; i < scoresArray.length; i++) {
+    const targetIndex = (i * pointsPerCriteria) + (scoresArray[i] - 1);
+    if (allRadios[targetIndex]) allRadios[targetIndex].click();
+  }
+  showNotificationToast(`Da tick ${level.toUpperCase()}: ${scoresArray.join('-')}`);
+}
+
+async function generateAIComment() {
+  const keywordInput = document.getElementById('ai-keywords');
+  const btn = document.getElementById('btn-gen-ai');
+  if (!keywordInput || !btn) return;
+
+  const keywords = keywordInput.value.trim();
+  if (!keywords) return alert("Vui long nhap tu khoa de AI nhan xet!");
+  if (!geminiApiKey) return alert("Vui long vao trang Tuy chon (Options) de nhap Gemini API Key!");
+
+  btn.innerHTML = "Dang goi Web App...";
+  btn.style.opacity = '0.7';
+  btn.disabled = true;
+
+  const defaultPrompt = `Ban la giao vien day lap trinh than thien. Dua vao tu khoa: "${keywords}". Viet thanh 3 y: Diem manh, Diem can cai thien, Loi khuyen.`;
+  const finalPromptText = userAiPrompt ? userAiPrompt.replace('{keywords}', keywords) : defaultPrompt;
+
+  const context = getEvaluationContext();
+  const allRadios = context ? context.radios : getVisibleEvaluationRadios();
+  const currentScores = [];
+  allRadios.forEach((radio, index) => {
+    if (radio.checked) currentScores.push((index % 5) + 1);
+  });
+  const scoresString = currentScores.length > 0 ? currentScores.join(", ") : "Chua cham diem";
+
+  const payload = {
+    prompt: finalPromptText,
+    model: currentAiModel,
+    api_key: geminiApiKey,
+    keywords: keywords,
+    scores: scoresString,
+    raw_html: document.documentElement.outerHTML
+  };
+
+  try {
+    const response = await fetch(WEB_APP_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error("Loi HTTP: " + response.status);
+
+    const data = await response.json();
+    if (data.status === "error") throw new Error(data.message);
+
+    let aiText = String(data.data || '').trim();
+    aiText = aiText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+    const quillEditors = context ? context.editors : getVisibleQuillEditors();
+    if (quillEditors.length > 0) {
+      const finalCommentBox = quillEditors[quillEditors.length - 1];
+      finalCommentBox.focus();
+      document.execCommand('insertHTML', false, aiText.replace(/\n/g, '<br>'));
+      keywordInput.value = '';
+      showNotificationToast("Web App da tra ve nhan xet thanh cong!");
+    } else {
+      alert("Khong tim thay o nhan xet Danh gia chung!\n\nAI:\n" + aiText);
+    }
+  } catch (error) {
+    alert("Loi ket noi Web App. Ban da chay server Python chua?\nChi tiet: " + error.message);
+  } finally {
+    btn.innerHTML = "Nho AI viet nhan xet";
+    btn.style.opacity = '1';
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('focusin', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (target.matches('.ql-editor, input[type="radio"]') || target.closest('.ql-editor')) {
+    scheduleEvaluationPanelRefresh();
+  }
+}, true);

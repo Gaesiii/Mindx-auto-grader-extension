@@ -39,6 +39,9 @@ const aiModelInput = document.getElementById('aiModelInput');
 const scoreGioi = document.getElementById('scoreGioi');
 const scoreKha = document.getElementById('scoreKha');
 const scoreTb = document.getElementById('scoreTb');
+const promptTemplateSelect = document.getElementById('promptTemplateSelect');
+const applyPromptTemplateBtn = document.getElementById('applyPromptTemplateBtn');
+const promptTemplateHint = document.getElementById('promptTemplateHint');
 const aiPromptInput = document.getElementById('aiPromptInput');
 const saveAiBtn = document.getElementById('saveAiBtn');
 
@@ -67,6 +70,83 @@ const DEFAULT_PROMPT = `Bạn là thầy giáo dạy lập trình thân thiện 
 Hãy viết 1 đoạn nhận xét chung dành cho phụ huynh, trình bày rõ ràng nhẹ nhàng, không dùng từ gây phản cảm hoặc chất vấn học viên. Dùng nói giảm nói tránh sao cho nhẹ nhưng vẫn truyền đạt được ý của keywords. và tối ưu nhất là khoảng 80 chữ.viết ngắn gọn , không cần kính gửi gì như viết thư. truyền đạt ý chính là đủ:
 ví dụ:
 Con là học sinh hòa đồng, luôn mang lại năng lượng tích cực cho lớp học. Bên cạnh đó, con cũng đã có sự tiến bộ nhất định khi bắt đầu cố gắng tự giải quyết một số bài tập. Tuy nhiên, con vẫn còn phụ thuộc vào công cụ hỗ trợ. Thầy mong con luyện tập nghiêm túc hơn, tự mình tư duy và làm bài để củng cố kiến thức và phát triển tư duy lập trình một cách bền vững..`;
+
+const PROMPT_TEMPLATE_CUSTOM = '__custom__';
+const PROMPT_TEMPLATES = [
+  {
+    id: 'legacy_default',
+    label: 'Prompt hien tai (Legacy)',
+    hint: 'Prompt dang dung truoc day cua ban.',
+    prompt: DEFAULT_PROMPT
+  },
+  {
+    id: 'female_teacher_soft',
+    label: 'Giao vien nu - mem mai',
+    hint: 'Nhe nhang, dong vien, phu hop phu huynh.',
+    prompt: `Ban la co giao day lap trinh, giao tiep am ap va tinh te. Dua vao keywords: "{keywords}".
+Hay viet 1 doan nhan xet 70-100 chu gui phu huynh theo 3 y:
+1) Diem tot cua con trong buoi hoc.
+2) Dieu can ren them, noi nhe va tich cuc.
+3) Goi y hoc tap cu the cho tuan toi.
+Khong phe binh nang, khong dung tu gay ap luc, van ro muc tieu cai thien.`
+  },
+  {
+    id: 'female_teacher_strict',
+    label: 'Giao vien nu - nghiem',
+    hint: 'Van lich su nhung ro rang ve ky luat va ky nang.',
+    prompt: `Ban la co giao day lap trinh, phong cach ro rang va ky luat. Dua vao keywords: "{keywords}".
+Viet 1 doan nhan xet 80-110 chu cho phu huynh, gom:
+- Ket qua hien tai cua con.
+- 1-2 van de can sua ngay.
+- Ke hoach ren luyen cu the (muc tieu + han thoi gian).
+Ngu dieu ton trong, truc dien, khong lan man.`
+  },
+  {
+    id: 'neutral_short',
+    label: 'Trung lap - ngan gon',
+    hint: 'Nhan xet ngan, de copy nhanh len LMS.',
+    prompt: `Ban la giao vien lap trinh. Dua vao keywords: "{keywords}".
+Viet nhan xet 60-80 chu, 3 cau:
+Cau 1: diem manh.
+Cau 2: diem can cai thien.
+Cau 3: huong dan hanh dong tiep theo.
+Khong mo dau thu tu, khong chen tieu de.`
+  }
+];
+
+function getPromptTemplateById(templateId) {
+  return PROMPT_TEMPLATES.find((template) => template.id === templateId) || null;
+}
+
+function updatePromptTemplateHint(templateId) {
+  if (!promptTemplateHint) return;
+  if (!templateId || templateId === PROMPT_TEMPLATE_CUSTOM) {
+    promptTemplateHint.textContent = 'Ban co the giu prompt hien tai hoac chon mau roi bam "Ap dung mau".';
+    return;
+  }
+
+  const template = getPromptTemplateById(templateId);
+  promptTemplateHint.textContent = template ? template.hint : '';
+}
+
+function syncPromptTemplateSelect(promptText) {
+  if (!promptTemplateSelect) return;
+  const normalizedPrompt = String(promptText || '').trim();
+  const matchedTemplate = PROMPT_TEMPLATES.find((template) => template.prompt.trim() === normalizedPrompt);
+  promptTemplateSelect.value = matchedTemplate ? matchedTemplate.id : PROMPT_TEMPLATE_CUSTOM;
+  updatePromptTemplateHint(promptTemplateSelect.value);
+}
+
+function initPromptTemplateSelector() {
+  if (!promptTemplateSelect) return;
+
+  const optionHtml = [
+    `<option value="${PROMPT_TEMPLATE_CUSTOM}">Keep current prompt</option>`,
+    ...PROMPT_TEMPLATES.map((template) => `<option value="${template.id}">${template.label}</option>`)
+  ];
+  promptTemplateSelect.innerHTML = optionHtml.join('');
+  updatePromptTemplateHint(PROMPT_TEMPLATE_CUSTOM);
+}
 
 function setIdentityStatus(text, isError = false) {
   if (!identityStatus) return;
@@ -242,6 +322,8 @@ function restoreTreeState() {
   }
 }
 
+initPromptTemplateSelector();
+
 chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt', 'userIdentity'], (result) => {
   if (result.pasteKey) pasteInput.value = result.pasteKey;
   if (result.searchKey) searchInput.value = result.searchKey;
@@ -255,6 +337,7 @@ chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 
   scoreKha.value = scores.kha; 
   scoreTb.value = scores.tb;
   aiPromptInput.value = result.aiPrompt || DEFAULT_PROMPT;
+  syncPromptTemplateSelect(aiPromptInput.value);
   initIdentitySection(result.userIdentity || null);
 
   fetchAllData(); 
@@ -275,6 +358,33 @@ function formatKeyCombo(e) {
     if (combo) input.value = combo;
   });
 });
+
+if (promptTemplateSelect) {
+  promptTemplateSelect.addEventListener('change', () => {
+    updatePromptTemplateHint(promptTemplateSelect.value);
+  });
+}
+
+if (applyPromptTemplateBtn) {
+  applyPromptTemplateBtn.addEventListener('click', () => {
+    const selectedId = promptTemplateSelect ? promptTemplateSelect.value : PROMPT_TEMPLATE_CUSTOM;
+    if (selectedId === PROMPT_TEMPLATE_CUSTOM) {
+      updatePromptTemplateHint(selectedId);
+      return;
+    }
+
+    const template = getPromptTemplateById(selectedId);
+    if (!template) return;
+    aiPromptInput.value = template.prompt;
+    updatePromptTemplateHint(selectedId);
+  });
+}
+
+if (aiPromptInput) {
+  aiPromptInput.addEventListener('input', () => {
+    syncPromptTemplateSelect(aiPromptInput.value);
+  });
+}
 
 saveKeysBtn.addEventListener('click', () => {
   chrome.storage.local.set({ pasteKey: pasteInput.value, searchKey: searchInput.value, toggleKey: toggleInput.value }, () => alert("Đã lưu Phím tắt thành công!"));
