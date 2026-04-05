@@ -50,10 +50,170 @@ const btnSaveData = document.getElementById('btnSaveData');
 const btnDeleteData = document.getElementById('btnDeleteData');
 const cloudStatus = document.getElementById('cloudStatus');
 
+const authMethodGoogle = document.getElementById('authMethodGoogle');
+const authMethodManual = document.getElementById('authMethodManual');
+const btnGoogleLogin = document.getElementById('btnGoogleLogin');
+const googleIdentityInfo = document.getElementById('googleIdentityInfo');
+const manualUidInput = document.getElementById('manualUidInput');
+const manualTokenInput = document.getElementById('manualTokenInput');
+const btnSaveManualIdentity = document.getElementById('btnSaveManualIdentity');
+const identityStatus = document.getElementById('identityStatus');
+const currentIdentitySummary = document.getElementById('currentIdentitySummary');
+const btnClearIdentity = document.getElementById('btnClearIdentity');
+
+let currentUserIdentity = null;
+
 const DEFAULT_PROMPT = `Bạn là thầy giáo dạy lập trình thân thiện và chuyên nghiệp. Dựa vào các từ khóa của học sinh này: "{keywords}".
 Hãy viết 1 đoạn nhận xét chung dành cho phụ huynh, trình bày rõ ràng nhẹ nhàng, không dùng từ gây phản cảm hoặc chất vấn học viên. Dùng nói giảm nói tránh sao cho nhẹ nhưng vẫn truyền đạt được ý của keywords. và tối ưu nhất là khoảng 80 chữ.viết ngắn gọn , không cần kính gửi gì như viết thư. truyền đạt ý chính là đủ:
 ví dụ:
 Con là học sinh hòa đồng, luôn mang lại năng lượng tích cực cho lớp học. Bên cạnh đó, con cũng đã có sự tiến bộ nhất định khi bắt đầu cố gắng tự giải quyết một số bài tập. Tuy nhiên, con vẫn còn phụ thuộc vào công cụ hỗ trợ. Thầy mong con luyện tập nghiêm túc hơn, tự mình tư duy và làm bài để củng cố kiến thức và phát triển tư duy lập trình một cách bền vững..`;
+
+function setIdentityStatus(text, isError = false) {
+  if (!identityStatus) return;
+  identityStatus.textContent = text;
+  identityStatus.style.color = isError ? '#dc3545' : '#0056b3';
+}
+
+function updateIdentityMethodUI() {
+  if (!authMethodGoogle || !authMethodManual) return;
+  const useGoogle = authMethodGoogle.checked;
+  if (btnGoogleLogin) btnGoogleLogin.disabled = !useGoogle;
+  if (manualUidInput) manualUidInput.disabled = useGoogle;
+  if (manualTokenInput) manualTokenInput.disabled = useGoogle;
+  if (btnSaveManualIdentity) btnSaveManualIdentity.disabled = useGoogle;
+}
+
+function renderIdentity(identity) {
+  currentUserIdentity = identity || null;
+  if (!currentIdentitySummary) return;
+
+  if (!identity || !identity.userId) {
+    currentIdentitySummary.textContent = 'Identity đang trống. Hãy chọn Google hoặc Manual UID.';
+    setIdentityStatus('Chưa cài đặt user identity.');
+    if (googleIdentityInfo) {
+      googleIdentityInfo.textContent = 'Lấy profile từ tài khoản Google của Chrome profile hiện tại.';
+    }
+    return;
+  }
+
+  const methodLabel = identity.method === 'google' ? 'Google Login' : 'Manual UID/Token';
+  const updatedAt = identity.updatedAt ? new Date(identity.updatedAt).toLocaleString() : 'Unknown';
+  const tokenInfo = identity.token ? 'Token: saved' : 'Token: empty';
+  setIdentityStatus(`Đang dùng ${methodLabel} - UID: ${identity.userId}`);
+  currentIdentitySummary.textContent = `Method: ${methodLabel} | Display: ${identity.displayName || identity.userId} | ${tokenInfo} | Updated: ${updatedAt}`;
+
+  if (identity.method === 'google') {
+    if (authMethodGoogle) authMethodGoogle.checked = true;
+    if (googleIdentityInfo) {
+      const email = identity.google?.email || '(no email returned)';
+      const profileId = identity.google?.id || '(no profile id)';
+      googleIdentityInfo.textContent = `Google account: ${email} | Profile ID: ${profileId}`;
+    }
+  } else {
+    if (authMethodManual) authMethodManual.checked = true;
+    if (manualUidInput) manualUidInput.value = identity.userId || '';
+    if (manualTokenInput) manualTokenInput.value = identity.token || '';
+  }
+
+  updateIdentityMethodUI();
+}
+
+function saveIdentity(identity) {
+  chrome.storage.local.set({ userIdentity: identity }, () => {
+    renderIdentity(identity);
+  });
+}
+
+function handleGoogleIdentity() {
+  setIdentityStatus('Đang kết nối Google profile...');
+  chrome.identity.getProfileUserInfo({ accountStatus: 'ANY' }, (profile) => {
+    if (chrome.runtime.lastError) {
+      setIdentityStatus(`Google login lỗi: ${chrome.runtime.lastError.message}`, true);
+      return;
+    }
+
+    const googleId = profile?.id?.trim() || '';
+    const email = profile?.email?.trim() || '';
+    const userId = googleId || email;
+
+    if (!userId) {
+      setIdentityStatus('Không lấy được Google ID. Hãy đăng nhập Chrome profile trước.', true);
+      return;
+    }
+
+    const identity = {
+      method: 'google',
+      userId,
+      displayName: email || googleId,
+      token: '',
+      google: { id: googleId, email },
+      updatedAt: new Date().toISOString()
+    };
+
+    saveIdentity(identity);
+  });
+}
+
+function handleManualIdentitySave() {
+  const uid = manualUidInput?.value.trim() || '';
+  const token = manualTokenInput?.value.trim() || '';
+
+  if (!uid) {
+    setIdentityStatus('UID không được để trống.', true);
+    if (manualUidInput) manualUidInput.focus();
+    return;
+  }
+
+  const identity = {
+    method: 'manual',
+    userId: uid,
+    displayName: uid,
+    token,
+    updatedAt: new Date().toISOString()
+  };
+
+  saveIdentity(identity);
+}
+
+function clearIdentity() {
+  chrome.storage.local.remove(['userIdentity'], () => {
+    currentUserIdentity = null;
+    if (manualUidInput) manualUidInput.value = '';
+    if (manualTokenInput) manualTokenInput.value = '';
+    if (authMethodGoogle) authMethodGoogle.checked = true;
+    updateIdentityMethodUI();
+    renderIdentity(null);
+  });
+}
+
+function initIdentitySection(identity) {
+  if (!authMethodGoogle || !authMethodManual) return;
+
+  if (identity?.method === 'manual') {
+    authMethodManual.checked = true;
+    authMethodGoogle.checked = false;
+  } else {
+    authMethodGoogle.checked = true;
+    authMethodManual.checked = false;
+  }
+
+  if (btnGoogleLogin) {
+    btnGoogleLogin.addEventListener('click', handleGoogleIdentity);
+  }
+  if (btnSaveManualIdentity) {
+    btnSaveManualIdentity.addEventListener('click', handleManualIdentitySave);
+  }
+  if (btnClearIdentity) {
+    btnClearIdentity.addEventListener('click', clearIdentity);
+  }
+
+  [authMethodGoogle, authMethodManual].forEach((radio) => {
+    radio.addEventListener('change', updateIdentityMethodUI);
+  });
+
+  renderIdentity(identity || null);
+  updateIdentityMethodUI();
+}
 
 // ==========================================
 // HỆ THỐNG GIỮ TRẠNG THÁI CÂY THƯ MỤC
@@ -82,7 +242,7 @@ function restoreTreeState() {
   }
 }
 
-chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt'], (result) => {
+chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt', 'userIdentity'], (result) => {
   if (result.pasteKey) pasteInput.value = result.pasteKey;
   if (result.searchKey) searchInput.value = result.searchKey;
   if (result.toggleKey) toggleInput.value = result.toggleKey;
@@ -95,6 +255,7 @@ chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 
   scoreKha.value = scores.kha; 
   scoreTb.value = scores.tb;
   aiPromptInput.value = result.aiPrompt || DEFAULT_PROMPT;
+  initIdentitySection(result.userIdentity || null);
 
   fetchAllData(); 
 });
@@ -122,6 +283,11 @@ saveKeysBtn.addEventListener('click', () => {
 saveAiBtn.addEventListener('click', () => {
   const scores = { gioi: scoreGioi.value.trim() || '5,5,5,5,5,5,5', kha: scoreKha.value.trim() || '4,4,4,4,4,4,4', tb: scoreTb.value.trim() || '3,3,3,3,3,3,3' };
   chrome.storage.local.set({ geminiApiKey: geminiKeyInput.value.trim(), aiModel: aiModelInput.value, autoTickScores: scores, aiPrompt: aiPromptInput.value.trim() || DEFAULT_PROMPT }, () => alert("Đã lưu Cấu hình AI và Barem!"));
+});
+
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace !== 'local' || !changes.userIdentity) return;
+  renderIdentity(changes.userIdentity.newValue || null);
 });
 
 // ===============================================

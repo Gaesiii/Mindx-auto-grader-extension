@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LMS Trial Task Manager</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-root">
+    <header class="popup-header">
+      <h1>Trial Task Manager</h1>
+      <button id="btnCheckUpdates" class="btn btn-secondary" type="button">Check Update</button>
+    </header>
+
+    <section id="updateBanner" class="update-banner hidden" aria-live="polite"></section>
+
+    <section class="identity-bar">
+      <div id="identityText" class="identity-text">User identity is not configured.</div>
+      <button id="btnOpenSettings" class="btn btn-secondary" type="button">Settings</button>
+    </section>
+
+    <section class="panel">
+      <h2>Assigned Trial Students</h2>
+      <div id="taskList" class="task-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Task Evaluation</h2>
+      <form id="evaluationForm">
+        <div class="field-grid">
+          <label>Student Name
+            <input id="studentNameField" type="text" readonly>
+          </label>
+          <label>Age
+            <input id="ageField" type="number" readonly>
+          </label>
+        </div>
+
+        <div class="field-grid">
+          <label>Course
+            <input id="courseField" type="text" readonly>
+          </label>
+          <label>Consultant
+            <input id="consultantField" type="text" readonly>
+          </label>
+        </div>
+
+        <label>Student Notes
+          <textarea id="notesField" rows="2" readonly></textarea>
+        </label>
+
+        <div class="field-grid">
+          <label>Schedule Date
+            <input id="scheduleDateField" type="text" readonly>
+          </label>
+          <label>Schedule Time
+            <input id="scheduleTimeField" type="text" readonly>
+          </label>
+        </div>
+
+        <label class="check-row">
+          <input id="absentField" type="checkbox">
+          Mark as Absent (Vang)
+        </label>
+
+        <label>Trial Status
+          <select id="trialStatusField">
+            <option value="pending">Pending</option>
+            <option value="pass">Pass</option>
+            <option value="fail">Fail</option>
+          </select>
+        </label>
+
+        <label>Feedback / Notes
+          <textarea id="feedbackField" rows="3" placeholder="Enter consultant feedback"></textarea>
+        </label>
+
+        <label>Data Logs
+          <textarea id="dataLogsField" rows="3" placeholder="Internal logs for sync"></textarea>
+        </label>
+
+        <div class="actions-row">
+          <button id="btnSaveDraft" class="btn btn-secondary" type="button">Save Draft</button>
+          <button id="btnSubmitTask" class="btn btn-primary" type="button">Submit Selected</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Unexpected Student</h2>
+      <form id="unexpectedForm" class="unexpected-form">
+        <div class="field-grid">
+          <label>Name
+            <input id="newStudentName" type="text" required>
+          </label>
+          <label>Age
+            <input id="newStudentAge" type="number" min="4" max="100" required>
+          </label>
+        </div>
+
+        <div class="field-grid">
+          <label>Course
+            <input id="newStudentCourse" type="text" required>
+          </label>
+          <label>Consultant
+            <input id="newConsultantInfo" type="text" placeholder="Sale / consultant name">
+          </label>
+        </div>
+
+        <div class="field-grid">
+          <label>Date
+            <input id="newScheduleDate" type="date" required>
+          </label>
+          <label>Time
+            <input id="newScheduleTime" type="time" required>
+          </label>
+        </div>
+
+        <label>Notes
+          <textarea id="newStudentNotes" rows="2" placeholder="Reason this task was added on the fly"></textarea>
+        </label>
+
+        <button class="btn btn-secondary" type="submit">Add Unexpected Student</button>
+      </form>
+    </section>
+
+    <footer class="popup-footer">
+      <button id="btnSubmitAll" class="btn btn-primary" type="button">Submit All Tasks</button>
+      <div id="statusText" class="status-text" aria-live="polite"></div>
+    </footer>
+  </div>
+
+  <script src="task-api.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
