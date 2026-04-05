@@ -135,32 +135,53 @@ function renderIdentity() {
 
 function renderUpdateBanner() {
   const info = state.updateInfo;
-  if (!info?.updateAvailable) {
+  if (!info) {
     els.updateBanner.classList.add("hidden");
     els.updateBanner.innerHTML = "";
     return;
   }
 
-  const shortSha = info.latestCommitSha ? info.latestCommitSha.slice(0, 7) : "unknown";
-  const detail = info.reason === "tag"
-    ? `New tag detected: ${escapeHtml(info.latestTagName || "unknown")}`
-    : `New commit detected: ${escapeHtml(shortSha)}`;
-  const link = info.latestCommitUrl || info.repoUrl || "https://github.com";
   const checkedAt = info.checkedAt ? new Date(info.checkedAt).toLocaleString() : "unknown";
+  const link = info.latestCommitUrl || info.repoUrl || "https://github.com";
 
+  if (info.updateAvailable) {
+    const shortSha = info.latestCommitSha ? info.latestCommitSha.slice(0, 7) : "unknown";
+    const detail = info.reason === "tag"
+      ? `New tag detected: ${escapeHtml(info.latestTagName || "unknown")}`
+      : `New commit detected: ${escapeHtml(shortSha)}`;
+
+    els.updateBanner.classList.remove("hidden");
+    els.updateBanner.innerHTML = `
+      <div><strong>Update available.</strong> ${detail}</div>
+      <div style="margin-top:4px;">Last check: ${escapeHtml(checkedAt)}</div>
+      <button id="btnOpenUpdateLink" class="btn btn-secondary" type="button" style="margin-top:6px;">Open Repository</button>
+    `;
+
+    const button = document.getElementById("btnOpenUpdateLink");
+    if (button) {
+      button.addEventListener("click", () => {
+        chrome.tabs.create({ url: link });
+      });
+    }
+    return;
+  }
+
+  if (info.lastError) {
+    els.updateBanner.classList.remove("hidden");
+    els.updateBanner.innerHTML = `
+      <div><strong>Cannot verify updates right now.</strong></div>
+      <div style="margin-top:4px;">Reason: ${escapeHtml(info.lastError)}</div>
+      <div style="margin-top:4px;">Last check: ${escapeHtml(checkedAt)}</div>
+    `;
+    return;
+  }
+
+  const localVersion = info.localVersion || "unknown";
   els.updateBanner.classList.remove("hidden");
   els.updateBanner.innerHTML = `
-    <div><strong>Update available.</strong> ${detail}</div>
+    <div><strong>You are on the latest version (${escapeHtml(localVersion)}).</strong></div>
     <div style="margin-top:4px;">Last check: ${escapeHtml(checkedAt)}</div>
-    <button id="btnOpenUpdateLink" class="btn btn-secondary" type="button" style="margin-top:6px;">Open Repository</button>
   `;
-
-  const button = document.getElementById("btnOpenUpdateLink");
-  if (button) {
-    button.addEventListener("click", () => {
-      chrome.tabs.create({ url: link });
-    });
-  }
 }
 
 function statusClass(status, absent) {
