@@ -5,8 +5,8 @@
   };
 
   const API_ENDPOINTS = {
-    fetchTasks: "",
-    submitTasks: ""
+    fetchTasks: "https://lms-performance-tracker.vercel.app/api/trial-tasks",
+    submitTasks: "https://lms-performance-tracker.vercel.app/api/trial-tasks/submit"
   };
 
   function storageGet(keys) {
@@ -106,9 +106,12 @@
   async function getAssignedTasks(userIdentity) {
     const userId = userIdentity?.userId;
     if (!userId) return [];
+    const token = userIdentity?.token || "";
 
     if (API_ENDPOINTS.fetchTasks) {
-      const response = await fetch(`${API_ENDPOINTS.fetchTasks}?userId=${encodeURIComponent(userId)}`);
+      const query = new URLSearchParams({ userId });
+      if (token) query.set("token", token);
+      const response = await fetch(`${API_ENDPOINTS.fetchTasks}?${query.toString()}`);
       if (!response.ok) throw new Error(`Fetch task API failed (${response.status})`);
       const payload = await response.json();
       const remoteTasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
