@@ -2,10 +2,14 @@ let isExtensionEnabled = true;
 let pasteKey = ''; let toggleKey = ''; let searchKey = '';
 let templates = [];
 let geminiApiKey = '';
-let currentAiModel = 'gemini-2.0-flash'; 
+let currentAiModel = 'gemini-2.5-flash';
+let aiProviders = [];
 let userAiPrompt = ''; 
 let cloudApiUrl = '';
 let autoTickScores = { gioi: [5,5,5,5,5,5,5], kha: [4,4,4,4,4,4,4], tb: [3,3,3,3,3,3,3] };
+const GOOGLE_PROVIDER_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+let exhaustedAiCandidates = new Set();
+let exhaustedAiDateKey = getLocalDateKey();
 
 // 🌐 ĐƯỜNG DẪN GỌI VỀ WEB APP PYTHON (LOCALHOST)
 const WEB_APP_API_URL = "https://lms-performance-tracker.vercel.app/api/generate";
@@ -37,13 +41,55 @@ const COURSE_TREE = {
 
 function parseScoreString(str) { return String(str || '').split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)); }
 
-chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'searchKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt'], (result) => {
+function getLocalDateKey() {
+  return new Date().toLocaleDateString('en-CA');
+}
+
+function normalizeProviderType(value) {
+  return String(value || '').toLowerCase() === 'other' ? 'other' : 'google';
+}
+
+function sanitizeAiProviders(rawProviders) {
+  if (!Array.isArray(rawProviders)) return [];
+
+  return rawProviders
+    .map((provider, index) => {
+      const providerType = normalizeProviderType(provider?.provider);
+      const apiKey = String(provider?.apiKey || '').trim();
+      if (!apiKey) return null;
+
+      const model = providerType === 'other'
+        ? String(provider?.model || '').trim()
+        : '';
+      if (providerType === 'other' && !model) return null;
+
+      return {
+        id: String(provider?.id || `provider-${index + 1}`),
+        provider: providerType,
+        name: String(provider?.name || '').trim(),
+        apiKey,
+        model
+      };
+    })
+    .filter(Boolean);
+}
+
+function resetExhaustedAiIfNewDate() {
+  const todayKey = getLocalDateKey();
+  if (todayKey !== exhaustedAiDateKey) {
+    exhaustedAiCandidates.clear();
+    exhaustedAiDateKey = todayKey;
+  }
+}
+
+chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'searchKey', 'geminiApiKey', 'aiModel', 'aiProviders', 'autoTickScores', 'aiPrompt'], (result) => {
   isExtensionEnabled = result.isExtensionEnabled !== false;
   if (result.pasteKey) pasteKey = result.pasteKey;
   if (result.toggleKey) toggleKey = result.toggleKey;
   if (result.searchKey) searchKey = result.searchKey;
   if (result.geminiApiKey) geminiApiKey = result.geminiApiKey;
-  if (result.aiModel) currentAiModel = result.aiModel; 
+  if (result.aiModel) currentAiModel = result.aiModel;
+  aiProviders = sanitizeAiProviders(result.aiProviders);
   if (result.aiPrompt) userAiPrompt = result.aiPrompt;
   if (result.autoTickScores) {
     autoTickScores = { gioi: parseScoreString(result.autoTickScores.gioi), kha: parseScoreString(result.autoTickScores.kha), tb: parseScoreString(result.autoTickScores.tb) };
@@ -60,7 +106,12 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     if (changes.toggleKey) toggleKey = changes.toggleKey.newValue;
     if (changes.searchKey) searchKey = changes.searchKey.newValue;
     if (changes.geminiApiKey) geminiApiKey = changes.geminiApiKey.newValue;
-    if (changes.aiModel) currentAiModel = changes.aiModel.newValue; 
+    if (changes.aiModel) currentAiModel = changes.aiModel.newValue;
+    if (changes.aiProviders) {
+      aiProviders = sanitizeAiProviders(changes.aiProviders.newValue);
+      exhaustedAiCandidates.clear();
+      exhaustedAiDateKey = getLocalDateKey();
+    }
     if (changes.aiPrompt) userAiPrompt = changes.aiPrompt.newValue;
     if (changes.autoTickScores) {
       autoTickScores = { gioi: parseScoreString(changes.autoTickScores.newValue.gioi), kha: parseScoreString(changes.autoTickScores.newValue.kha), tb: parseScoreString(changes.autoTickScores.newValue.tb) };
@@ -640,6 +691,68 @@ function fillReactScores(level) {
   showNotificationToast(`Da tick ${level.toUpperCase()}: ${scoresArray.join('-')}`);
 }
 
+function buildAiCandidates() {
+  resetExhaustedAiIfNewDate();
+
+  const sourceProviders = aiProviders.length
+    ? aiProviders
+    : (geminiApiKey ? [{ id: 'legacy-google', provider: 'google', name: 'Google Legacy', apiKey: geminiApiKey, model: '' }] : []);
+
+  const candidates = [];
+  sourceProviders.forEach((provider, providerIndex) => {
+    const providerType = normalizeProviderType(provider.provider);
+    const providerId = provider.id || `provider-${providerIndex + 1}`;
+    const providerName = provider.name || (providerType === 'google' ? 'Google Gemini' : 'Other Provider');
+    const apiKey = String(provider.apiKey || '').trim();
+    if (!apiKey) return;
+
+    if (providerType === 'google') {
+      GOOGLE_PROVIDER_MODELS.forEach((modelName) => {
+        const candidateId = `${providerId}|${modelName}`;
+        if (exhaustedAiCandidates.has(candidateId)) return;
+        candidates.push({
+          id: candidateId,
+          provider: 'google',
+          providerName,
+          apiKey,
+          model: modelName
+        });
+      });
+      return;
+    }
+
+    const customModel = String(provider.model || '').trim();
+    if (!customModel) return;
+
+    const candidateId = `${providerId}|${customModel}`;
+    if (exhaustedAiCandidates.has(candidateId)) return;
+    candidates.push({
+      id: candidateId,
+      provider: 'other',
+      providerName,
+      apiKey,
+      model: customModel
+    });
+  });
+
+  return candidates;
+}
+
+function isDailyQuotaError(message) {
+  const text = String(message || '').toLowerCase();
+  if (!text) return false;
+
+  const quotaTokens = ['quota', 'exhaust', 'limit', '429', 'rate limit', 'insufficient', 'ran out', 'token'];
+  const dailyTokens = ['daily', 'day', 'today', '24h', 'per day'];
+  const hasQuotaSignal = quotaTokens.some((token) => text.includes(token));
+  const hasDailySignal = dailyTokens.some((token) => text.includes(token));
+
+  if (hasQuotaSignal && hasDailySignal) return true;
+  if (text.includes('resource has been exhausted')) return true;
+  if (text.includes('insufficient_quota')) return true;
+  return false;
+}
+
 async function generateAIComment() {
   const keywordInput = document.getElementById('ai-keywords');
   const btn = document.getElementById('btn-gen-ai');
@@ -647,7 +760,11 @@ async function generateAIComment() {
 
   const keywords = keywordInput.value.trim();
   if (!keywords) return alert("Vui long nhap tu khoa de AI nhan xet!");
-  if (!geminiApiKey) return alert("Vui long vao trang Tuy chon (Options) de nhap Gemini API Key!");
+
+  const aiCandidates = buildAiCandidates();
+  if (!aiCandidates.length) {
+    return alert("Chua co API key/model kha dung. Vao Options de cau hinh AI Provider.");
+  }
 
   btn.innerHTML = "Dang goi Web App...";
   btn.style.opacity = '0.7';
@@ -663,42 +780,83 @@ async function generateAIComment() {
     if (radio.checked) currentScores.push((index % 5) + 1);
   });
   const scoresString = currentScores.length > 0 ? currentScores.join(", ") : "Chua cham diem";
-
-  const payload = {
+  const basePayload = {
     prompt: finalPromptText,
-    model: currentAiModel,
-    api_key: geminiApiKey,
     keywords: keywords,
     scores: scoresString,
     raw_html: document.documentElement.outerHTML
   };
 
+  let aiText = '';
+  let selectedCandidate = null;
+  let lastError = null;
+
   try {
-    const response = await fetch(WEB_APP_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error("Loi HTTP: " + response.status);
+    for (const candidate of aiCandidates) {
+      const payload = {
+        ...basePayload,
+        model: candidate.model,
+        api_key: candidate.apiKey,
+        provider: candidate.provider
+      };
 
-    const data = await response.json();
-    if (data.status === "error") throw new Error(data.message);
+      try {
+        const response = await fetch(WEB_APP_API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
 
-    let aiText = String(data.data || '').trim();
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          data = { status: 'error', message: `Invalid JSON response (${response.status})` };
+        }
+
+        if (!response.ok) {
+          const httpError = data?.message || `HTTP ${response.status}`;
+          throw new Error(httpError);
+        }
+
+        if (data?.status === 'error') {
+          throw new Error(data.message || 'Unknown AI error');
+        }
+
+        aiText = String(data?.data || '').trim();
+        selectedCandidate = candidate;
+        break;
+      } catch (candidateError) {
+        lastError = candidateError;
+        const errorMessage = String(candidateError?.message || '');
+        if (isDailyQuotaError(errorMessage)) {
+          exhaustedAiCandidates.add(candidate.id);
+        }
+      }
+    }
+
+    if (!selectedCandidate || !aiText) {
+      const remainingCandidates = buildAiCandidates();
+      if (!remainingCandidates.length) {
+        throw new Error('Tat ca key/model hien da het quota trong ngay. Hay doi reset quota hoac them key moi.');
+      }
+      if (lastError) throw lastError;
+      throw new Error('Khong co candidate AI nao tra ve ket qua.');
+    }
+
     aiText = aiText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-
     const quillEditors = context ? context.editors : getVisibleQuillEditors();
     if (quillEditors.length > 0) {
       const finalCommentBox = quillEditors[quillEditors.length - 1];
       finalCommentBox.focus();
       document.execCommand('insertHTML', false, aiText.replace(/\n/g, '<br>'));
       keywordInput.value = '';
-      showNotificationToast("Web App da tra ve nhan xet thanh cong!");
+      showNotificationToast(`AI thanh cong (${selectedCandidate.model})`);
     } else {
       alert("Khong tim thay o nhan xet Danh gia chung!\n\nAI:\n" + aiText);
     }
   } catch (error) {
-    alert("Loi ket noi Web App. Ban da chay server Python chua?\nChi tiet: " + error.message);
+    alert("Loi goi AI.\nChi tiet: " + error.message);
   } finally {
     btn.innerHTML = "Nho AI viet nhan xet";
     btn.style.opacity = '1';

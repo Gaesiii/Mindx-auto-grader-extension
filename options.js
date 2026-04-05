@@ -34,11 +34,13 @@ const searchInput = document.getElementById('searchInput');
 const toggleInput = document.getElementById('toggleInput'); 
 const saveKeysBtn = document.getElementById('saveKeysBtn');
 
-const geminiKeyInput = document.getElementById('geminiKeyInput');
-const aiModelInput = document.getElementById('aiModelInput');
-const scoreGioi = document.getElementById('scoreGioi');
-const scoreKha = document.getElementById('scoreKha');
-const scoreTb = document.getElementById('scoreTb');
+const providerTypeInput = document.getElementById('providerTypeInput');
+const providerNameInput = document.getElementById('providerNameInput');
+const providerApiKeyInput = document.getElementById('providerApiKeyInput');
+const providerModelInput = document.getElementById('providerModelInput');
+const btnAddProviderKey = document.getElementById('btnAddProviderKey');
+const providerFormHint = document.getElementById('providerFormHint');
+const providerList = document.getElementById('providerList');
 const promptTemplateSelect = document.getElementById('promptTemplateSelect');
 const applyPromptTemplateBtn = document.getElementById('applyPromptTemplateBtn');
 const promptTemplateHint = document.getElementById('promptTemplateHint');
@@ -65,6 +67,10 @@ const currentIdentitySummary = document.getElementById('currentIdentitySummary')
 const btnClearIdentity = document.getElementById('btnClearIdentity');
 
 let currentUserIdentity = null;
+let aiProviders = [];
+let editingProviderId = null;
+
+const GOOGLE_PROVIDER_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
 const DEFAULT_PROMPT = `Bạn là thầy giáo dạy lập trình thân thiện và chuyên nghiệp. Dựa vào các từ khóa của học sinh này: "{keywords}".
 Hãy viết 1 đoạn nhận xét chung dành cho phụ huynh, trình bày rõ ràng nhẹ nhàng, không dùng từ gây phản cảm hoặc chất vấn học viên. Dùng nói giảm nói tránh sao cho nhẹ nhưng vẫn truyền đạt được ý của keywords. và tối ưu nhất là khoảng 80 chữ.viết ngắn gọn , không cần kính gửi gì như viết thư. truyền đạt ý chính là đủ:
@@ -157,6 +163,158 @@ function initPromptTemplateSelector() {
   ];
   promptTemplateSelect.innerHTML = optionHtml.join('');
   updatePromptTemplateHint(PROMPT_TEMPLATE_CUSTOM);
+}
+
+function generateProviderId() {
+  return `ai-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function normalizeProviderType(value) {
+  return String(value || '').toLowerCase() === 'other' ? 'other' : 'google';
+}
+
+function sanitizeAiProviders(rawProviders) {
+  if (!Array.isArray(rawProviders)) return [];
+
+  return rawProviders
+    .map((provider, index) => {
+      const type = normalizeProviderType(provider?.provider);
+      const apiKey = String(provider?.apiKey || '').trim();
+      if (!apiKey) return null;
+
+      const model = type === 'other'
+        ? String(provider?.model || '').trim()
+        : '';
+      if (type === 'other' && !model) return null;
+
+      return {
+        id: String(provider?.id || `provider-${index + 1}`),
+        provider: type,
+        name: String(provider?.name || '').trim(),
+        apiKey,
+        model,
+        createdAt: provider?.createdAt || new Date().toISOString()
+      };
+    })
+    .filter(Boolean);
+}
+
+function maskApiKey(key) {
+  const value = String(key || '').trim();
+  if (!value) return '(empty)';
+  if (value.length <= 8) return `${value.slice(0, 2)}***${value.slice(-2)}`;
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+function updateProviderFormVisibility() {
+  if (!providerTypeInput || !providerModelInput || !providerFormHint) return;
+  const type = normalizeProviderType(providerTypeInput.value);
+  const isOther = type === 'other';
+  providerModelInput.style.display = isOther ? 'block' : 'none';
+  providerModelInput.disabled = !isOther;
+
+  if (isOther) {
+    providerFormHint.textContent = 'Other Provider: ban can nhap API key + model name.';
+  } else {
+    providerFormHint.textContent = `Google Provider: model tu dong fallback ${GOOGLE_PROVIDER_MODELS.join(' -> ')}.`;
+  }
+}
+
+function clearProviderForm() {
+  editingProviderId = null;
+  if (providerTypeInput) providerTypeInput.value = 'google';
+  if (providerNameInput) providerNameInput.value = '';
+  if (providerApiKeyInput) providerApiKeyInput.value = '';
+  if (providerModelInput) providerModelInput.value = '';
+  if (btnAddProviderKey) btnAddProviderKey.textContent = 'Them / Cap nhat key';
+  updateProviderFormVisibility();
+}
+
+function loadProviderToForm(providerId) {
+  const provider = aiProviders.find((entry) => entry.id === providerId);
+  if (!provider) return;
+
+  editingProviderId = provider.id;
+  if (providerTypeInput) providerTypeInput.value = provider.provider;
+  if (providerNameInput) providerNameInput.value = provider.name || '';
+  if (providerApiKeyInput) providerApiKeyInput.value = provider.apiKey || '';
+  if (providerModelInput) providerModelInput.value = provider.model || '';
+  if (btnAddProviderKey) btnAddProviderKey.textContent = 'Cap nhat key';
+  updateProviderFormVisibility();
+}
+
+function renderProviderList() {
+  if (!providerList) return;
+
+  if (!aiProviders.length) {
+    providerList.innerHTML = '<div class="note" style="font-style:normal; margin:0;">Chua co API key nao. Hay them it nhat 1 key.</div>';
+    return;
+  }
+
+  const html = aiProviders.map((provider) => {
+    const providerLabel = provider.provider === 'google' ? 'Google Gemini' : 'Other Provider';
+    const modelLabel = provider.provider === 'google'
+      ? GOOGLE_PROVIDER_MODELS.join(' -> ')
+      : provider.model;
+    const displayName = provider.name || '(no label)';
+
+    return `
+      <div class="provider-row" data-provider-id="${provider.id}">
+        <div class="provider-title">
+          <span>${providerLabel} • ${displayName}</span>
+          <button class="provider-remove" type="button" data-provider-action="remove" data-provider-id="${provider.id}">Xoa</button>
+        </div>
+        <div class="provider-meta">API key: ${maskApiKey(provider.apiKey)}</div>
+        <div class="provider-meta">Model: ${modelLabel}</div>
+        <button type="button" data-provider-action="edit" data-provider-id="${provider.id}" style="width:max-content; border:none; background:#e5edf8; color:#123; border-radius:4px; padding:5px 9px; cursor:pointer; font-size:11px;">Sua</button>
+      </div>
+    `;
+  }).join('');
+
+  providerList.innerHTML = html;
+}
+
+function upsertProviderFromForm() {
+  const type = normalizeProviderType(providerTypeInput?.value);
+  const name = String(providerNameInput?.value || '').trim();
+  const apiKey = String(providerApiKeyInput?.value || '').trim();
+  const model = String(providerModelInput?.value || '').trim();
+
+  if (!apiKey) {
+    alert('API key khong duoc de trong.');
+    return;
+  }
+  if (type === 'other' && !model) {
+    alert('Other Provider bat buoc co model name.');
+    return;
+  }
+
+  const nextProvider = {
+    id: editingProviderId || generateProviderId(),
+    provider: type,
+    name,
+    apiKey,
+    model: type === 'other' ? model : '',
+    createdAt: new Date().toISOString()
+  };
+
+  if (editingProviderId) {
+    aiProviders = aiProviders.map((provider) => (provider.id === editingProviderId ? nextProvider : provider));
+  } else {
+    aiProviders.push(nextProvider);
+  }
+
+  renderProviderList();
+  clearProviderForm();
+}
+
+function removeProvider(providerId) {
+  const before = aiProviders.length;
+  aiProviders = aiProviders.filter((provider) => provider.id !== providerId);
+  if (before === aiProviders.length) return;
+
+  if (editingProviderId === providerId) clearProviderForm();
+  renderProviderList();
 }
 
 function setIdentityStatus(text, isError = false) {
@@ -334,19 +492,27 @@ function restoreTreeState() {
 }
 
 initPromptTemplateSelector();
+updateProviderFormVisibility();
+clearProviderForm();
 
-chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'geminiApiKey', 'aiModel', 'autoTickScores', 'aiPrompt', 'userIdentity'], (result) => {
+chrome.storage.local.get(['pasteKey', 'searchKey', 'toggleKey', 'aiProviders', 'geminiApiKey', 'aiPrompt', 'userIdentity'], (result) => {
   if (result.pasteKey) pasteInput.value = result.pasteKey;
   if (result.searchKey) searchInput.value = result.searchKey;
   if (result.toggleKey) toggleInput.value = result.toggleKey;
-  
-  if (result.geminiApiKey) geminiKeyInput.value = result.geminiApiKey;
-  if (result.aiModel) aiModelInput.value = result.aiModel;
-  
-  const scores = result.autoTickScores || { gioi: '5,5,5,5,5,5,5', kha: '4,4,4,4,4,4,4', tb: '3,3,3,3,3,3,3' };
-  scoreGioi.value = scores.gioi; 
-  scoreKha.value = scores.kha; 
-  scoreTb.value = scores.tb;
+
+  aiProviders = sanitizeAiProviders(result.aiProviders);
+  if (!aiProviders.length && result.geminiApiKey) {
+    aiProviders = [{
+      id: generateProviderId(),
+      provider: 'google',
+      name: 'Google Legacy Key',
+      apiKey: String(result.geminiApiKey || '').trim(),
+      model: '',
+      createdAt: new Date().toISOString()
+    }];
+  }
+  renderProviderList();
+
   aiPromptInput.value = result.aiPrompt || DEFAULT_PROMPT;
   syncPromptTemplateSelect(aiPromptInput.value);
   initIdentitySection(result.userIdentity || null);
@@ -369,6 +535,35 @@ function formatKeyCombo(e) {
     if (combo) input.value = combo;
   });
 });
+
+if (providerTypeInput) {
+  providerTypeInput.addEventListener('change', updateProviderFormVisibility);
+}
+
+if (btnAddProviderKey) {
+  btnAddProviderKey.addEventListener('click', upsertProviderFromForm);
+}
+
+if (providerList) {
+  providerList.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest('[data-provider-action]');
+    if (!button) return;
+
+    const action = button.getAttribute('data-provider-action');
+    const providerId = button.getAttribute('data-provider-id');
+    if (!providerId) return;
+
+    if (action === 'remove') {
+      removeProvider(providerId);
+      return;
+    }
+    if (action === 'edit') {
+      loadProviderToForm(providerId);
+    }
+  });
+}
 
 if (promptTemplateSelect) {
   promptTemplateSelect.addEventListener('change', () => {
@@ -402,13 +597,33 @@ saveKeysBtn.addEventListener('click', () => {
 });
 
 saveAiBtn.addEventListener('click', () => {
-  const scores = { gioi: scoreGioi.value.trim() || '5,5,5,5,5,5,5', kha: scoreKha.value.trim() || '4,4,4,4,4,4,4', tb: scoreTb.value.trim() || '3,3,3,3,3,3,3' };
-  chrome.storage.local.set({ geminiApiKey: geminiKeyInput.value.trim(), aiModel: aiModelInput.value, autoTickScores: scores, aiPrompt: aiPromptInput.value.trim() || DEFAULT_PROMPT }, () => alert("Đã lưu Cấu hình AI và Barem!"));
+  if (!aiProviders.length) {
+    alert('Can it nhat 1 API key truoc khi luu.');
+    return;
+  }
+  const sanitizedProviders = sanitizeAiProviders(aiProviders);
+  if (!sanitizedProviders.length) {
+    alert('Danh sach API key khong hop le.');
+    return;
+  }
+
+  aiProviders = sanitizedProviders;
+  const firstGoogle = aiProviders.find((provider) => provider.provider === 'google');
+  const payload = {
+    aiProviders,
+    aiPrompt: aiPromptInput.value.trim() || DEFAULT_PROMPT,
+    geminiApiKey: firstGoogle ? firstGoogle.apiKey : ''
+  };
+  chrome.storage.local.set(payload, () => alert('Da luu cau hinh AI!'));
 });
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace !== 'local' || !changes.userIdentity) return;
-  renderIdentity(changes.userIdentity.newValue || null);
+  if (namespace !== 'local') return;
+  if (changes.userIdentity) renderIdentity(changes.userIdentity.newValue || null);
+  if (changes.aiProviders) {
+    aiProviders = sanitizeAiProviders(changes.aiProviders.newValue);
+    renderProviderList();
+  }
 });
 
 // ===============================================
