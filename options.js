@@ -111,6 +111,17 @@ Cau 1: diem manh.
 Cau 2: diem can cai thien.
 Cau 3: huong dan hanh dong tiep theo.
 Khong mo dau thu tu, khong chen tieu de.`
+  },
+  {
+    id: 'female_parent_focus',
+    label: 'Giao vien nu - huong PH',
+    hint: 'Tap trung hanh dong cu the de phu huynh de theo sat.',
+    prompt: `Ban la co giao lap trinh. Dua vao keywords: "{keywords}".
+Hay viet nhan xet 80-110 chu gui phu huynh, giu giong van am ap va ro rang:
+1) Neu 1 diem tien bo noi bat cua con.
+2) Neu 1 han che can uu tien cai thien ngay.
+3) Dua ra 2 viec phu huynh co the dong hanh tai nha trong tuan nay.
+Khong dung tu trach moc, khong qua chung chung, cau van ngan gon de doc nhanh.`
   }
 ];
 
