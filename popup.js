@@ -273,7 +273,20 @@ async function checkUpdatesNow() {
 
     state.updateInfo = response.info || null;
     renderUpdateBanner();
-    setStatus("Update check completed.");
+
+    const info = state.updateInfo;
+    if (info?.lastError) {
+      setStatus(`Update check warning: ${info.lastError}`, true);
+      return;
+    }
+
+    if (info?.updateAvailable) {
+      setStatus("Update available. Open repository for details.");
+      return;
+    }
+
+    const version = info?.localVersion || "unknown";
+    setStatus(`Ban dang o phien ban moi nhat (${version}).`);
   });
 }
 
