@@ -179,6 +179,12 @@ async function checkForUpdates() {
       lastError: error?.message || "Unknown error while checking updates"
     };
 
+    const previousVersion = previousInfo?.localVersion || null;
+    if (previousVersion && previousVersion !== localVersion) {
+      updateInfo.updateAvailable = false;
+      updateInfo.reason = "none";
+    }
+
     await storageSet({ [STORAGE_KEYS.updateInfo]: updateInfo });
     setUpdateBadge(Boolean(updateInfo.updateAvailable));
     return updateInfo;
