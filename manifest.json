@@ -1,33 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "your mom chung may beo - promaxxxxx",
-  "version": "3.3",
-  "version_name": "3.3",
-  "description": "tool lo",
+  "name": "AI Evaluator",
+  "short_name": "AI Evaluator",
+  "version": "1.0.0",
+  "description": "Trợ lý ảo.",
   "permissions": [
-    "storage",
-    "clipboardWrite",
-    "clipboardRead",
-    "alarms",
-    "identity",
-    "identity.email"
+    "storage"
   ],
-  "host_permissions": [
-    "https://api.github.com/*"
-  ],
-  "action": {
-    "default_popup": "popup.html",
-    "default_title": "Mo khay lich su"
-  },
-  "icons": {
-    "16": "1.jfif",
-    "32": "1.jfif",
-    "48": "1.jfif",
-    "128": "1.jfif"
-  },
-  "background": {
-    "service_worker": "background.js"
-  },
   "content_scripts": [
     {
       "matches": [
@@ -38,15 +17,6 @@
       ]
     }
   ],
-  "commands": {
-    "macro-paste": {
-      "suggested_key": {
-        "default": "Ctrl+Shift+V",
-        "mac": "Command+Shift+V"
-      },
-      "description": "Paste van ban gan nhat tu khay tam ra man hinh"
-    }
-  },
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
