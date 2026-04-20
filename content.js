@@ -1,4 +1,4 @@
-let isExtensionEnabled = true;
+﻿let isExtensionEnabled = true;
 let pasteKey = ''; let toggleKey = ''; let searchKey = '';
 let templates = [];
 let geminiApiKey = '';
@@ -25,7 +25,41 @@ const ACP_BULK_TRANSIENT_RETRY_COUNT = 2;
 const ACP_BULK_DIALOG_WAIT_TIMEOUT_MS = 12000;
 const ACP_BULK_EDITOR_WAIT_TIMEOUT_MS = 12000;
 const ACP_BULK_DIALOG_CLOSE_TIMEOUT_MS = 6000;
-const BULK_DEFAULT_TAGS = ['Ngoan', 'Gioi', 'Tap trung', 'Lam bai nhanh', 'Can co gang', 'Sang tao'];
+const BULK_TAG_TYPE_GOOD = 'good';
+const BULK_TAG_TYPE_BAD = 'bad';
+const BULK_DEFAULT_GOOD_TAGS = [
+  'Ngoan',
+  'Lễ phép',
+  'Siêng năng',
+  'Chăm chỉ',
+  'Chủ động',
+  'Tập trung',
+  'Năng động',
+  'Trầm tính',
+  'Hòa đồng',
+  'Sáng tạo',
+  'Tự giác',
+  'Tiếp thu nhanh',
+  'Làm bài nhanh',
+  'Cẩn thận'
+];
+const BULK_DEFAULT_BAD_TAGS = [
+  'Hư',
+  'Lười',
+  'Mất tập trung',
+  'Nói chuyện riêng',
+  'Thiếu kiên nhẫn',
+  'Hay quên'
+];
+const BULK_DEFAULT_TAGS = [...BULK_DEFAULT_GOOD_TAGS, ...BULK_DEFAULT_BAD_TAGS];
+const LEGACY_BULK_TAG_SIGNATURE = new Set([
+  'ngoan',
+  'gioi',
+  'tap trung',
+  'lam bai nhanh',
+  'can co gang',
+  'sang tao'
+]);
 
 // 🎯 RADAR GHI NHỚ VỊ TRÍ ZALO
 let lastActiveInput = null;
@@ -33,13 +67,14 @@ let lastSavedRange = null;
 let evalDialogCounter = 0;
 let evalRefreshScheduled = false;
 let savedBulkTags = BULK_DEFAULT_TAGS.slice();
+let savedBulkTagTypes = {};
 let bulkRefreshScheduled = false;
 let lastBulkScanAt = 0;
 let lastBulkStudentHash = '';
 let bulkKeywordDrafts = {};
 let bulkLessonContentDraft = '';
 let bulkLessonPickerState = { subject: 'Scratch', course: 'SB', lesson: 1 };
-let bulkLessonStatusText = 'Chon mon/khoa/buoi roi bam Lay noi dung API.';
+let bulkLessonStatusText = 'Chọn môn/khóa/buổi rồi bấm Lấy nội dung API.';
 let bulkLessonStatusIsError = false;
 let bulkRunInProgress = false;
 
@@ -75,6 +110,83 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function formatElapsedTime(totalSeconds) {
+  const safeSeconds = Math.max(0, Number.parseInt(totalSeconds, 10) || 0);
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function clampToRange(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function makeElementDraggable(targetEl, handleEl) {
+  if (!(targetEl instanceof HTMLElement)) return;
+  if (!(handleEl instanceof HTMLElement)) return;
+  if (handleEl.dataset.acpDragReady === '1') return;
+  handleEl.dataset.acpDragReady = '1';
+  handleEl.style.cursor = 'move';
+  handleEl.style.userSelect = 'none';
+
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+
+  const stopDragging = () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', onMouseMove, true);
+    window.removeEventListener('mouseup', stopDragging, true);
+    window.removeEventListener('blur', stopDragging);
+    document.removeEventListener('mouseleave', stopDragging, true);
+  };
+
+  const onMouseMove = (event) => {
+    if (!dragging) return;
+    const nextLeft = startLeft + (event.clientX - startX);
+    const nextTop = startTop + (event.clientY - startY);
+    const maxLeft = Math.max(0, window.innerWidth - targetEl.offsetWidth);
+    const maxTop = Math.max(0, window.innerHeight - targetEl.offsetHeight);
+    targetEl.style.left = `${clampToRange(nextLeft, 0, maxLeft)}px`;
+    targetEl.style.top = `${clampToRange(nextTop, 0, maxTop)}px`;
+    targetEl.style.right = 'auto';
+    targetEl.style.bottom = 'auto';
+    targetEl.style.transform = 'none';
+  };
+
+  handleEl.addEventListener('mousedown', (event) => {
+    if (event.button !== 0) return;
+    const interactiveTarget = event.target instanceof Element
+      ? event.target.closest('button, input, textarea, select, a, [contenteditable="true"]')
+      : null;
+    if (interactiveTarget) return;
+
+    event.preventDefault();
+    const rect = targetEl.getBoundingClientRect();
+    startX = event.clientX;
+    startY = event.clientY;
+    startLeft = rect.left;
+    startTop = rect.top;
+
+    targetEl.style.left = `${rect.left}px`;
+    targetEl.style.top = `${rect.top}px`;
+    targetEl.style.right = 'auto';
+    targetEl.style.bottom = 'auto';
+    targetEl.style.transform = 'none';
+
+    dragging = true;
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMouseMove, true);
+    window.addEventListener('mouseup', stopDragging, true);
+    window.addEventListener('blur', stopDragging);
+    document.addEventListener('mouseleave', stopDragging, true);
+  });
+}
+
 function getLocalDateKey() {
   return new Date().toLocaleDateString('en-CA');
 }
@@ -86,6 +198,79 @@ function sanitizeTagList(rawTags) {
     .filter(Boolean);
   const unique = Array.from(new Set(normalized));
   return unique.length ? unique : BULK_DEFAULT_TAGS.slice();
+}
+
+function normalizeBulkTagToken(value) {
+  return normalizeVietnameseText(value).replace(/\s+/g, ' ').trim();
+}
+
+const BULK_DEFAULT_GOOD_TAG_TOKENS = new Set(BULK_DEFAULT_GOOD_TAGS.map((tag) => normalizeBulkTagToken(tag)).filter(Boolean));
+const BULK_DEFAULT_BAD_TAG_TOKENS = new Set(BULK_DEFAULT_BAD_TAGS.map((tag) => normalizeBulkTagToken(tag)).filter(Boolean));
+const BULK_NEGATIVE_TAG_HINTS = [
+  'hu',
+  'luoi',
+  'mat tap trung',
+  'noi chuyen rieng',
+  'thieu kien nhan',
+  'hay quen'
+];
+
+function normalizeBulkTagType(value) {
+  return String(value || '').toLowerCase() === BULK_TAG_TYPE_BAD ? BULK_TAG_TYPE_BAD : BULK_TAG_TYPE_GOOD;
+}
+
+function inferBulkTagType(tagText) {
+  const normalized = normalizeBulkTagToken(tagText);
+  if (!normalized) return BULK_TAG_TYPE_GOOD;
+  if (BULK_DEFAULT_BAD_TAG_TOKENS.has(normalized)) return BULK_TAG_TYPE_BAD;
+  if (BULK_DEFAULT_GOOD_TAG_TOKENS.has(normalized)) return BULK_TAG_TYPE_GOOD;
+  if (BULK_NEGATIVE_TAG_HINTS.some((keyword) => normalized.includes(keyword))) return BULK_TAG_TYPE_BAD;
+  return BULK_TAG_TYPE_GOOD;
+}
+
+function sanitizeBulkTagTypes(rawTagTypes, tags) {
+  const source = rawTagTypes && typeof rawTagTypes === 'object' ? rawTagTypes : {};
+  const normalizedMap = {};
+  Object.entries(source).forEach(([key, value]) => {
+    const token = normalizeBulkTagToken(key);
+    if (!token) return;
+    normalizedMap[token] = normalizeBulkTagType(value);
+  });
+
+  const resolved = {};
+  tags.forEach((tag) => {
+    const token = normalizeBulkTagToken(tag);
+    if (!token) return;
+    resolved[token] = normalizedMap[token] || inferBulkTagType(tag);
+  });
+  return resolved;
+}
+
+function getBulkTagType(tagText) {
+  const token = normalizeBulkTagToken(tagText);
+  if (!token) return BULK_TAG_TYPE_GOOD;
+  return savedBulkTagTypes[token] || inferBulkTagType(tagText);
+}
+
+function shouldUpgradeLegacyBulkTags(rawTags) {
+  if (!Array.isArray(rawTags) || !rawTags.length) return false;
+  const normalized = Array.from(
+    new Set(
+      rawTags
+        .map((tag) => normalizeBulkTagToken(tag))
+        .filter(Boolean)
+    )
+  );
+
+  if (!normalized.length || normalized.length > LEGACY_BULK_TAG_SIGNATURE.size) return false;
+  return normalized.every((tag) => LEGACY_BULK_TAG_SIGNATURE.has(tag));
+}
+
+function resolveBulkTagList(rawTags) {
+  if (shouldUpgradeLegacyBulkTags(rawTags)) {
+    return BULK_DEFAULT_TAGS.slice();
+  }
+  return sanitizeTagList(rawTags);
 }
 
 function escapeHtml(value) {
@@ -323,12 +508,12 @@ function isTemplateMatchLesson(templateTitle, subject, course, lesson) {
 async function fetchBulkLessonContentFromApi(subject, course, lesson) {
   const apiUrl = COURSE_API_BY_SUBJECT[subject];
   if (!apiUrl) {
-    throw new Error(`Khong tim thay API cho mon ${subject}`);
+    throw new Error(`Không tìm thấy API cho môn ${subject}`);
   }
 
   const response = await fetch(apiUrl);
   if (!response.ok) {
-    throw new Error(`API loi (${response.status})`);
+    throw new Error(`API lỗi (${response.status})`);
   }
 
   const payload = await response.json();
@@ -342,16 +527,16 @@ async function fetchBulkLessonContentFromApi(subject, course, lesson) {
   });
   const matched = preferred || matchedCandidates[0];
   if (!matched) {
-    throw new Error(`Khong tim thay noi dung cho ${course} - Buoi ${lesson}`);
+    throw new Error(`Không tìm thấy nội dung cho ${course} - Buổi ${lesson}`);
   }
 
   const cleanText = cleanLessonContentHtml(matched.content || '');
   if (!cleanText) {
-    throw new Error('Noi dung bai hoc rong sau khi loc');
+    throw new Error('Nội dung bài học rỗng sau khi lọc');
   }
 
   return {
-    title: String(matched.title || `${subject} - ${course} - Buoi ${lesson}`),
+    title: String(matched.title || `${subject} - ${course} - Buổi ${lesson}`),
     text: cleanText
   };
 }
@@ -418,7 +603,7 @@ function resetExhaustedAiIfNewDate() {
   }
 }
 
-chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'searchKey', 'geminiApiKey', 'aiModel', 'aiProviders', 'autoTickScores', 'aiPrompt', 'customTags'], (result) => {
+chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'searchKey', 'geminiApiKey', 'aiModel', 'aiProviders', 'autoTickScores', 'aiPrompt', 'customTags', 'customTagTypes'], (result) => {
   isExtensionEnabled = result.isExtensionEnabled !== false;
   if (result.pasteKey) pasteKey = result.pasteKey;
   if (result.toggleKey) toggleKey = result.toggleKey;
@@ -430,7 +615,15 @@ chrome.storage.local.get(['isExtensionEnabled', 'pasteKey', 'toggleKey', 'search
   if (result.autoTickScores) {
     autoTickScores = { gioi: parseScoreString(result.autoTickScores.gioi), kha: parseScoreString(result.autoTickScores.kha), tb: parseScoreString(result.autoTickScores.tb) };
   }
-  savedBulkTags = sanitizeTagList(result.customTags);
+  savedBulkTags = resolveBulkTagList(result.customTags);
+  savedBulkTagTypes = sanitizeBulkTagTypes(result.customTagTypes, savedBulkTags);
+  if (shouldUpgradeLegacyBulkTags(result.customTags)) {
+    chrome.storage.local.set({ customTags: savedBulkTags, customTagTypes: savedBulkTagTypes });
+    return;
+  }
+  if (!result.customTagTypes || typeof result.customTagTypes !== 'object') {
+    chrome.storage.local.set({ customTagTypes: savedBulkTagTypes });
+  }
 });
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
@@ -453,8 +646,20 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     if (changes.autoTickScores) {
       autoTickScores = { gioi: parseScoreString(changes.autoTickScores.newValue.gioi), kha: parseScoreString(changes.autoTickScores.newValue.kha), tb: parseScoreString(changes.autoTickScores.newValue.tb) };
     }
+    let tagStateChanged = false;
     if (changes.customTags) {
-      savedBulkTags = sanitizeTagList(changes.customTags.newValue);
+      savedBulkTags = resolveBulkTagList(changes.customTags.newValue);
+      savedBulkTagTypes = sanitizeBulkTagTypes(savedBulkTagTypes, savedBulkTags);
+      tagStateChanged = true;
+      if (shouldUpgradeLegacyBulkTags(changes.customTags.newValue)) {
+        chrome.storage.local.set({ customTags: savedBulkTags, customTagTypes: savedBulkTagTypes });
+      }
+    }
+    if (changes.customTagTypes) {
+      savedBulkTagTypes = sanitizeBulkTagTypes(changes.customTagTypes.newValue, savedBulkTags);
+      tagStateChanged = true;
+    }
+    if (tagStateChanged) {
       rerenderBulkTagsUI();
     }
   }
@@ -537,30 +742,39 @@ async function openTreeModal() {
     
     const style = document.createElement('style');
     style.textContent = `
-      .acp-tree-container { padding: 15px; overflow-y: auto; max-height: 65vh; background: #fdfdfd; }
+      .acp-tree-container { padding: 15px; overflow-y: auto; max-height: 65vh; background: #f8fafc; }
       .acp-tree-details { margin-bottom: 5px; }
-      .acp-tree-summary { font-weight: bold; cursor: pointer; padding: 10px; background: #eef2f5; border-radius: 4px; border: 1px solid #dee2e6; outline: none; transition: 0.2s; display: block; font-size: 14px;}
-      .acp-tree-summary:hover { background: #e2e6ea; }
-      .acp-crs-summary { margin-left: 15px; background: #fff; font-size: 14px; border-left: 3px solid #0056b3;}
-      .acp-tree-content { margin-left: 20px; padding-left: 10px; border-left: 1px dashed #ccc; }
-      .acp-tree-item { padding: 10px 10px; border-bottom: 1px dashed #eee; display: flex; justify-content: space-between; align-items: center; font-size: 13px; transition: 0.2s; }
-      .acp-tree-item.has-data { cursor: pointer; color: #0056b3; font-weight: bold; }
-      .acp-tree-item.has-data:hover { background: #e9ecef; border-left: 3px solid #0056b3; }
-      .acp-tree-item.no-data { color: #999; cursor: not-allowed; }
-      .acp-badge { font-size: 11px; padding: 4px 8px; border-radius: 12px; font-weight: normal; }
-      .acp-badge.has-data { background: #d4edda; color: #155724; }
-      .acp-badge.no-data { background: #f8d7da; color: #721c24; }
+      .acp-tree-summary { font-weight: 700; cursor: pointer; padding: 10px; background: #edf2f7; border-radius: 6px; border: 1px solid #d9e2ec; outline: none; transition: 0.2s; display: block; font-size: 14px; color:#1f2937; }
+      .acp-tree-summary:hover { background: #e2e8f0; }
+      .acp-crs-summary { margin-left: 15px; background: #fff; font-size: 14px; border-left: 3px solid #2563eb; }
+      .acp-tree-content { margin-left: 20px; padding-left: 10px; border-left: 1px dashed #cbd5e1; }
+      .acp-tree-item { padding: 10px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; align-items: center; font-size: 13px; transition: 0.2s; border-radius: 6px; }
+      .acp-tree-item.has-data { cursor: pointer; color: #1e3a8a; font-weight: 700; }
+      .acp-tree-item.has-data:hover { background: #e0ecff; border-left: 3px solid #2563eb; }
+      .acp-tree-item.no-data { color: #475569; cursor: not-allowed; background: #f8fafc; }
+      .acp-badge { font-size: 11px; padding: 4px 8px; border-radius: 999px; font-weight: 700; letter-spacing: 0.1px; }
+      .acp-badge.has-data { background: #2563eb; color: #ffffff; }
+      .acp-badge.no-data { background: #64748b; color: #ffffff; }
     `;
 
     modal.innerHTML = `
-      <div style="background: #0056b3; color: white; padding: 15px; font-weight: bold; font-size: 16px; text-align: center;">
-        📌 Chọn Báo Cáo Để Chèn (Zalo)
+      <div id="acp-tree-header" style="background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%); color: #ffffff; padding: 12px 14px; font-weight: 700; font-size: 15px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <span>📌 Chọn Báo Cáo Để Chèn (Zalo)</span>
+        <button id="acp-tree-close" type="button" style="border:none; background:rgba(255,255,255,0.2); color:#fff; width:24px; height:24px; border-radius:999px; cursor:pointer; font-size:12px; line-height:24px;">✕</button>
       </div>
       <div id="acp-tree-root" class="acp-tree-container"></div>
-      <div style="font-size:11px; color:#888; text-align:center; padding:10px; background:#fff; border-top:1px solid #eee;">Bấm Esc hoặc click ra ngoài để đóng</div>
+      <div style="font-size:11px; color:#334155; text-align:center; padding:10px; background:#f8fafc; border-top:1px solid #e2e8f0;">Kéo thanh tiêu đề để di chuyển. Bấm Esc hoặc click ra ngoài để đóng.</div>
     `;
     modal.appendChild(style);
     document.body.appendChild(modal);
+    const treeHeader = modal.querySelector('#acp-tree-header');
+    if (treeHeader instanceof HTMLElement) {
+      makeElementDraggable(modal, treeHeader);
+    }
+    const treeClose = modal.querySelector('#acp-tree-close');
+    if (treeClose instanceof HTMLButtonElement) {
+      treeClose.addEventListener('click', closeTreeModal);
+    }
 
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeTreeModal(); });
     document.addEventListener('click', (e) => { if (!modal.contains(e.target) && modal.style.display === 'flex') closeTreeModal(); });
@@ -786,7 +1000,7 @@ function buildEvaluationPanel(contextKey) {
   panel.dataset.closed = '0';
   panel.style.cssText = `position: fixed; top: 80px; right: 20px; width: min(320px, calc(100vw - 40px)); background: #ffffff; border-radius: 10px; box-shadow: 0 8px 25px rgba(0,0,0,0.15); z-index: 2147483647; padding: 14px; font-family: Arial, sans-serif; border: 1px solid #e0e0e0;`;
   panel.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px;">
+    <div id="acp-eval-drag-handle" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; border-bottom:1px dashed #dbe3ee; padding-bottom:8px;">
       <h4 style="margin:0; color:#1a73e8; font-size:15px;">Auto Tick Diem LMS</h4>
       <button id="acp-eval-close" type="button" style="background:transparent; border:none; color:#6b7280; font-size:12px; cursor:pointer;">Dong</button>
     </div>
@@ -811,6 +1025,10 @@ function buildEvaluationPanel(contextKey) {
   panel.querySelector('#btn-kha').addEventListener('click', () => fillReactScores('kha'));
   panel.querySelector('#btn-tb').addEventListener('click', () => fillReactScores('tb'));
   panel.querySelector('#btn-gen-ai').addEventListener('click', generateAIComment);
+  const evalDragHandle = panel.querySelector('#acp-eval-drag-handle');
+  if (evalDragHandle instanceof HTMLElement) {
+    makeElementDraggable(panel, evalDragHandle);
+  }
 
   return panel;
 }
@@ -1244,19 +1462,89 @@ function snapshotBulkKeywordDrafts() {
   ensureBulkLessonPickerState();
 }
 
-function getBulkTagsHtml(targetId) {
-  const chips = savedBulkTags.map((tag) => `
-    <span class="acp-bulk-tag-chip" style="display:inline-flex; align-items:center; gap:4px; background:#e6f4ff; border:1px solid #b3daff; border-radius:12px; padding:2px 7px; font-size:11px; color:#0b4f95; margin:2px;">
-      <button type="button" data-action="append-tag" data-target-id="${targetId}" data-tag="${escapeHtml(tag)}" style="border:none; background:transparent; color:inherit; cursor:pointer; font-size:11px; padding:0;">${escapeHtml(tag)}</button>
-      <button type="button" data-action="remove-tag" data-tag="${escapeHtml(tag)}" style="border:none; background:transparent; color:#c62828; cursor:pointer; font-size:12px; padding:0;">x</button>
+function getBulkTagPalette(tagText) {
+  const normalized = normalizeBulkTagToken(tagText);
+  const tagType = getBulkTagType(tagText);
+
+  if (tagType === BULK_TAG_TYPE_BAD) {
+    return {
+      background: 'linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%)',
+      border: '#fecdd3',
+      text: '#9f1239',
+      removeBackground: 'rgba(190, 24, 93, 0.14)',
+      removeText: '#9f1239'
+    };
+  }
+
+  if (normalized.includes('nang dong')) {
+    return {
+      background: 'linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%)',
+      border: '#fed7aa',
+      text: '#9a3412',
+      removeBackground: 'rgba(194, 65, 12, 0.14)',
+      removeText: '#9a3412'
+    };
+  }
+
+  if (normalized.includes('tram tinh')) {
+    return {
+      background: 'linear-gradient(135deg, #f5f3ff 0%, #ede9fe 100%)',
+      border: '#ddd6fe',
+      text: '#5b21b6',
+      removeBackground: 'rgba(91, 33, 182, 0.14)',
+      removeText: '#5b21b6'
+    };
+  }
+
+  return {
+    background: 'linear-gradient(135deg, #ecfeff 0%, #dbeafe 100%)',
+    border: '#bfdbfe',
+    text: '#1e3a8a',
+    removeBackground: 'rgba(30, 58, 138, 0.12)',
+    removeText: '#1e3a8a'
+  };
+}
+
+function buildBulkTagChipHtml(tag, targetId) {
+  const palette = getBulkTagPalette(tag);
+  return `
+    <span class="acp-bulk-tag-chip" style="display:inline-flex; align-items:center; gap:6px; background:${palette.background}; border:1px solid ${palette.border}; border-radius:999px; padding:3px 9px; font-size:11px; color:${palette.text}; margin:2px; box-shadow:0 2px 8px rgba(15, 23, 42, 0.08);">
+      <button type="button" data-action="append-tag" data-target-id="${targetId}" data-tag="${escapeHtml(tag)}" style="border:none; background:transparent; color:inherit; cursor:pointer; font-size:11px; font-weight:600; letter-spacing:0.1px; padding:0;">${escapeHtml(tag)}</button>
+      <button type="button" data-action="remove-tag" data-tag="${escapeHtml(tag)}" aria-label="Xóa tag ${escapeHtml(tag)}" style="width:16px; height:16px; border:none; border-radius:999px; background:${palette.removeBackground}; color:${palette.removeText}; cursor:pointer; font-size:11px; line-height:16px; padding:0;">×</button>
     </span>
-  `).join('');
+  `;
+}
+
+function buildBulkTagGroupHtml(title, tags, targetId) {
+  const chips = tags.map((tag) => buildBulkTagChipHtml(tag, targetId)).join('');
+  const fallbackText = title === 'Tốt' ? 'Chưa có tag tốt' : 'Chưa có tag chưa tốt';
+  return `
+    <div style="margin-bottom:6px;">
+      <div style="font-size:11px; font-weight:700; color:#334155; margin:0 0 4px 2px;">${title}</div>
+      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:2px;">
+        ${chips || `<span style="font-size:11px; color:#94a3b8; margin-left:2px;">${fallbackText}</span>`}
+      </div>
+    </div>
+  `;
+}
+
+function getBulkTagsHtml(targetId) {
+  const goodTags = [];
+  const badTags = [];
+  savedBulkTags.forEach((tag) => {
+    if (getBulkTagType(tag) === BULK_TAG_TYPE_BAD) {
+      badTags.push(tag);
+      return;
+    }
+    goodTags.push(tag);
+  });
 
   return `
-    ${chips}
-    <span style="display:inline-flex; gap:5px; margin-left:4px;">
-      <button type="button" data-action="add-tag" data-target-id="${targetId}" style="border:1px dashed #9aa5b1; background:#fff; color:#4f5d75; border-radius:10px; padding:2px 8px; font-size:11px; cursor:pointer;">+ Them</button>
-      <button type="button" data-action="clear-keyword" data-target-id="${targetId}" style="border:1px dashed #ef9a9a; background:#fff5f5; color:#b71c1c; border-radius:10px; padding:2px 8px; font-size:11px; cursor:pointer;">Xoa trang</button>
+    ${buildBulkTagGroupHtml('Tốt', goodTags, targetId)}
+    ${buildBulkTagGroupHtml('Chưa tốt', badTags, targetId)}
+    <span style="display:inline-flex; gap:6px; margin-left:4px;">
+      <button type="button" data-action="add-tag" data-target-id="${targetId}" style="border:1px dashed #93c5fd; background:linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); color:#1d4ed8; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:600; cursor:pointer; box-shadow:0 2px 8px rgba(59, 130, 246, 0.15);">+ Thêm tag</button>
+      <button type="button" data-action="clear-keyword" data-target-id="${targetId}" style="border:1px dashed #fca5a5; background:linear-gradient(135deg, #fff5f5 0%, #ffe4e6 100%); color:#be123c; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:600; cursor:pointer; box-shadow:0 2px 8px rgba(244, 63, 94, 0.14);">Xóa ô</button>
     </span>
   `;
 }
@@ -1272,13 +1560,23 @@ function rerenderBulkTagsUI() {
   });
 }
 
-function upsertBulkTag(tagText) {
+function upsertBulkTag(tagText, tagType = BULK_TAG_TYPE_GOOD) {
   const cleanedTag = String(tagText || '').trim();
   if (!cleanedTag) return;
-  if (savedBulkTags.includes(cleanedTag)) return;
+  const normalizedType = normalizeBulkTagType(tagType);
+  const token = normalizeBulkTagToken(cleanedTag);
+  if (!token) return;
 
-  savedBulkTags = sanitizeTagList([...savedBulkTags, cleanedTag]);
-  chrome.storage.local.set({ customTags: savedBulkTags }, () => {
+  if (!savedBulkTags.includes(cleanedTag)) {
+    savedBulkTags = sanitizeTagList([...savedBulkTags, cleanedTag]);
+  }
+
+  savedBulkTagTypes = sanitizeBulkTagTypes({
+    ...savedBulkTagTypes,
+    [token]: normalizedType
+  }, savedBulkTags);
+
+  chrome.storage.local.set({ customTags: savedBulkTags, customTagTypes: savedBulkTagTypes }, () => {
     rerenderBulkTagsUI();
   });
 }
@@ -1286,9 +1584,12 @@ function upsertBulkTag(tagText) {
 function removeBulkTag(tagText) {
   const cleanedTag = String(tagText || '').trim();
   if (!cleanedTag) return;
+  const token = normalizeBulkTagToken(cleanedTag);
 
   savedBulkTags = sanitizeTagList(savedBulkTags.filter((tag) => tag !== cleanedTag));
-  chrome.storage.local.set({ customTags: savedBulkTags }, () => {
+  if (token) delete savedBulkTagTypes[token];
+  savedBulkTagTypes = sanitizeBulkTagTypes(savedBulkTagTypes, savedBulkTags);
+  chrome.storage.local.set({ customTags: savedBulkTags, customTagTypes: savedBulkTagTypes }, () => {
     rerenderBulkTagsUI();
   });
 }
@@ -1378,7 +1679,7 @@ function handleBulkPanelClick(event) {
   if (action === 'remove-tag') {
     const tag = actionEl.getAttribute('data-tag');
     if (!tag) return;
-    if (confirm(`Xoa tag "${tag}"?`)) {
+    if (confirm(`Xóa tag "${tag}"?`)) {
       removeBulkTag(tag);
     }
     return;
@@ -1386,11 +1687,17 @@ function handleBulkPanelClick(event) {
 
   if (action === 'add-tag') {
     const targetId = actionEl.getAttribute('data-target-id');
-    const newTag = prompt('Nhap tag moi:');
+    const newTag = prompt('Nhập tag mới:');
     if (!targetId || !newTag) return;
     const cleaned = String(newTag || '').trim();
     if (!cleaned) return;
-    upsertBulkTag(cleaned);
+    const typeInput = prompt(`Phân loại tag "${cleaned}": nhập "1" = Tốt, "2" = Chưa tốt`, '1');
+    if (typeInput === null) return;
+    const normalizedTypeInput = normalizeBulkTagToken(typeInput);
+    const chosenType = ['2', 'chua tot', 'khong tot', 'xau', 'bad'].includes(normalizedTypeInput)
+      ? BULK_TAG_TYPE_BAD
+      : BULK_TAG_TYPE_GOOD;
+    upsertBulkTag(cleaned, chosenType);
     addBulkTagToInput(targetId, cleaned);
     return;
   }
@@ -1472,7 +1779,7 @@ async function fetchAndFillBulkLessonContent(options = {}) {
   ensureBulkLessonPickerState();
 
   const { subject, course, lesson } = bulkLessonPickerState;
-  setBulkLessonStatus(`Dang lay noi dung ${course} - Buoi ${lesson}...`, false);
+  setBulkLessonStatus(`Đang lấy nội dung ${course} - Buổi ${lesson}...`, false);
 
   try {
     const result = await fetchBulkLessonContentFromApi(subject, course, lesson);
@@ -1486,13 +1793,13 @@ async function fetchAndFillBulkLessonContent(options = {}) {
       }
     }
 
-    setBulkLessonStatus(`Da lay: ${result.title}`, false);
-    if (!silent) showNotificationToast(`Da lay noi dung ${course} - Buoi ${lesson}`);
+    setBulkLessonStatus(`Đã lấy: ${result.title}`, false);
+    if (!silent) showNotificationToast(`Đã lấy nội dung ${course} - Buổi ${lesson}`);
     return result.text;
   } catch (error) {
     const message = String(error?.message || error || 'Unknown error');
-    setBulkLessonStatus(`Loi lay noi dung: ${message}`, true);
-    if (!silent) showNotificationToast(`Loi lay noi dung bai hoc: ${message}`);
+    setBulkLessonStatus(`Lỗi lấy nội dung: ${message}`, true);
+    if (!silent) showNotificationToast(`Lỗi lấy nội dung bài học: ${message}`);
     throw error;
   }
 }
@@ -1501,19 +1808,19 @@ async function copyBulkLessonContentToClipboard() {
   snapshotBulkKeywordDrafts();
   const value = String(bulkLessonContentDraft || '').trim();
   if (!value) {
-    setBulkLessonStatus('Chua co noi dung de copy.', true);
-    showNotificationToast('Chua co noi dung bai hoc de copy');
+    setBulkLessonStatus('Chưa có nội dung để copy.', true);
+    showNotificationToast('Chưa có nội dung bài học để copy');
     return;
   }
 
   try {
     await copyTextToClipboard(value);
-    setBulkLessonStatus('Da copy noi dung bai hoc vao clipboard.', false);
-    showNotificationToast('Da copy noi dung bai hoc');
+    setBulkLessonStatus('Đã copy nội dung bài học vào clipboard.', false);
+    showNotificationToast('Đã copy nội dung bài học');
   } catch (error) {
     const message = String(error?.message || error || 'Unknown error');
-    setBulkLessonStatus(`Khong copy duoc: ${message}`, true);
-    showNotificationToast(`Khong copy duoc: ${message}`);
+    setBulkLessonStatus(`Không copy được: ${message}`, true);
+    showNotificationToast(`Không copy được: ${message}`);
   }
 }
 
@@ -1539,8 +1846,8 @@ function renderBulkStudentPanel(students) {
     return `
       <div style="padding:10px; border:1px solid #eef1f4; border-radius:8px; background:#fafbfc; margin-bottom:10px;">
         <div style="font-size:13px; font-weight:700; color:#1a73e8; margin-bottom:6px;">${escapeHtml(student.name)}</div>
-        <textarea id="${inputId}" data-student-key="${escapeHtml(student.key)}" placeholder="Nhap keywords, bo trong de bo qua hoc sinh nay" style="width:100%; min-height:48px; resize:vertical; box-sizing:border-box; border:1px solid #c9d3df; border-radius:6px; padding:7px; font-size:12px;">${currentValue}</textarea>
-        <div class="acp-bulk-tags" data-target-id="${inputId}" style="margin-top:6px; display:flex; flex-wrap:wrap; align-items:center;">
+        <textarea id="${inputId}" data-student-key="${escapeHtml(student.key)}" placeholder="Nhập keywords, bỏ trống để bỏ qua học sinh này" style="width:100%; min-height:48px; resize:vertical; box-sizing:border-box; border:1px solid #c9d3df; border-radius:6px; padding:7px; font-size:12px;">${currentValue}</textarea>
+        <div class="acp-bulk-tags" data-target-id="${inputId}" style="margin-top:8px; display:flex; flex-wrap:wrap; align-items:center; gap:4px;">
           ${getBulkTagsHtml(inputId)}
         </div>
       </div>
@@ -1548,31 +1855,35 @@ function renderBulkStudentPanel(students) {
   }).join('');
 
   panel.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:12px 12px 8px; border-bottom:1px solid #e5ebf1; background:#f8fafc;">
-      <div style="font-size:14px; font-weight:700; color:#123;">Nhan xet tung hoc sinh</div>
-      <button type="button" id="acp-bulk-close" style="border:none; background:transparent; color:#6b7280; cursor:pointer; font-size:12px;">Dong</button>
+    <div id="acp-bulk-drag-handle" style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:12px 12px 8px; border-bottom:1px solid #e5ebf1; background:#f8fafc;">
+      <div style="font-size:14px; font-weight:700; color:#123;">Nhận xét từng học sinh</div>
+      <button type="button" id="acp-bulk-close" style="border:none; background:transparent; color:#6b7280; cursor:pointer; font-size:12px;">Đóng</button>
     </div>
     <div style="padding:10px 12px; max-height: calc(100vh - 210px); overflow:auto;">
       <div style="padding:10px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; margin-bottom:10px;">
-        <div style="font-size:12px; font-weight:700; color:#334155; margin-bottom:6px;">Noi dung bai hoc tu API</div>
+        <div style="font-size:12px; font-weight:700; color:#334155; margin-bottom:6px;">Nội dung bài học từ API</div>
         <div style="display:grid; grid-template-columns:1fr 1fr 0.9fr; gap:6px; margin-bottom:6px;">
           <select id="acp-bulk-subject" style="height:30px; border:1px solid #c9d3df; border-radius:6px; padding:0 6px; font-size:12px;">${subjectOptionsHtml}</select>
           <select id="acp-bulk-course" style="height:30px; border:1px solid #c9d3df; border-radius:6px; padding:0 6px; font-size:12px;">${courseOptionsHtml}</select>
           <select id="acp-bulk-lesson" style="height:30px; border:1px solid #c9d3df; border-radius:6px; padding:0 6px; font-size:12px;">${lessonOptionsHtml}</select>
         </div>
         <div style="display:flex; gap:6px; margin-bottom:6px;">
-          <button type="button" data-action="fetch-lesson-content" style="flex:1; height:30px; border:1px solid #0d6efd; background:#0d6efd; color:#fff; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Lay noi dung</button>
-          <button type="button" data-action="copy-lesson-content" style="flex:1; height:30px; border:1px solid #64748b; background:#fff; color:#1f2937; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Copy noi dung</button>
+          <button type="button" data-action="fetch-lesson-content" style="flex:1; height:30px; border:1px solid #0d6efd; background:#0d6efd; color:#fff; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Lấy nội dung</button>
+          <button type="button" data-action="copy-lesson-content" style="flex:1; height:30px; border:1px solid #64748b; background:#fff; color:#1f2937; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600;">Copy nội dung</button>
         </div>
-        <textarea id="acp-bulk-lesson-content" placeholder="Nhap tom tat noi dung bai hoc de AI viet sat buoi hoc hon" style="width:100%; min-height:68px; resize:vertical; box-sizing:border-box; border:1px solid #c9d3df; border-radius:6px; padding:7px; font-size:12px;">${lessonContentValue}</textarea>
+        <textarea id="acp-bulk-lesson-content" placeholder="Nhập tóm tắt nội dung bài học để AI viết sát buổi học hơn" style="width:100%; min-height:68px; resize:vertical; box-sizing:border-box; border:1px solid #c9d3df; border-radius:6px; padding:7px; font-size:12px;">${lessonContentValue}</textarea>
         <div id="acp-bulk-lesson-status" style="margin-top:6px; font-size:11px; color:${lessonStatusColor};">${lessonStatusText}</div>
       </div>
       ${rowsHtml}
     </div>
     <div style="padding:10px 12px 12px; border-top:1px solid #e5ebf1; background:#fff;">
-      <button type="button" id="acp-bulk-run" style="width:100%; border:none; border-radius:7px; background:#0d6efd; color:#fff; padding:10px; font-size:13px; font-weight:700; cursor:pointer;">Viet nhan xet tat ca (AI 1 lan goi)</button>
+      <button type="button" id="acp-bulk-run" style="width:100%; border:none; border-radius:7px; background:#0d6efd; color:#fff; padding:10px; font-size:13px; font-weight:700; cursor:pointer;">Bắt đầu nhận xét</button>
     </div>
   `;
+  const bulkDragHandle = panel.querySelector('#acp-bulk-drag-handle');
+  if (bulkDragHandle instanceof HTMLElement) {
+    makeElementDraggable(panel, bulkDragHandle);
+  }
 }
 
 function scheduleBulkPanelRefresh() {
@@ -1766,7 +2077,7 @@ function applyBulkPromptVariables(templateText, values) {
 }
 
 function getBulkStudentInstruction(studentName, keyword, lessonContent) {
-  const fallbackPrompt = `Ban la giao vien day lap trinh. Dua vao tu khoa: "${keyword}". Viet nhan xet cho hoc sinh ten ${studentName} gom 3 y: Diem manh, Diem can cai thien, Loi khuyen.`;
+  const fallbackPrompt = `Bạn là giáo viên dạy lập trình. Dựa vào từ khóa: "${keyword}". Viết nhận xét cho học sinh tên ${studentName} gồm 3 ý: Điểm mạnh, Điểm cần cải thiện, Lời khuyên. Viết bằng tiếng Việt có dấu.`;
   const template = String(userAiPrompt || '').trim() || fallbackPrompt;
   return applyBulkPromptVariables(template, {
     name: studentName,
@@ -1787,14 +2098,14 @@ function buildBulkBatchPrompt(batchItems, lessonContent) {
   }));
 
   const parts = [
-    'Ban la giao vien lap trinh, can viet nhan xet rieng cho tung hoc sinh.',
+    'Bạn là giáo viên lập trình, cần viết nhận xét riêng cho từng học sinh.',
     normalizedLessonContent
-      ? `Noi dung bai hoc tham khao:\n${normalizedLessonContent}`
-      : 'Khong co noi dung bai hoc bo sung.',
-    'Bat buoc tra ve dung JSON, KHONG markdown, KHONG text ngoai JSON.',
+      ? `Nội dung bài học tham khảo:\n${normalizedLessonContent}`
+      : 'Không có nội dung bài học bổ sung.',
+    'Bắt buộc trả về đúng JSON, KHÔNG markdown, KHÔNG text ngoài JSON.',
     'Schema JSON:',
-    '{"comments":[{"student_id":"S1","student_name":"Ten hoc sinh","comment":"Noi dung nhan xet"}]}',
-    'Danh sach hoc sinh can xu ly:',
+    '{"comments":[{"student_id":"S1","student_name":"Tên học sinh","comment":"Nội dung nhận xét"}]}',
+    'Danh sách học sinh cần xử lý:',
     JSON.stringify(payloadForModel, null, 2)
   ];
 
@@ -1834,7 +2145,7 @@ function parseBulkJsonResponse(aiText) {
       return JSON.parse(candidate);
     } catch (error) {}
   }
-  throw new Error('AI khong tra ve JSON hop le cho batch.');
+  throw new Error('AI không trả về JSON hợp lệ cho batch.');
 }
 
 function normalizeBulkCommentEntries(parsedJson) {
@@ -1934,7 +2245,7 @@ async function generateBulkCommentsBatch(batchItems, lessonContent) {
   const parsedJson = parseBulkJsonResponse(aiResult.aiText);
   const { commentsByStudentId, missingStudentIds } = mapBatchCommentsByStudentId(parsedJson, batchItems);
   if (!Object.keys(commentsByStudentId).length) {
-    throw new Error('AI khong tra ve nhan xet hop le cho hoc sinh nao.');
+    throw new Error('AI không trả về nhận xét hợp lệ cho học sinh nào.');
   }
   return { commentsByStudentId, missingStudentIds, model: aiResult.candidate.model };
 }
@@ -1942,7 +2253,7 @@ async function generateBulkCommentsBatch(batchItems, lessonContent) {
 async function processBulkStudentWithComment(student, commentHtml) {
   const studentActionButton = findBulkStudentActionButton(student);
   if (!studentActionButton) {
-    throw new Error(`Khong tim thay nut "Nhan xet hoc sinh" cho ${student.name}`);
+    throw new Error(`Không tìm thấy nút "Nhận xét học sinh" cho ${student.name}`);
   }
 
   studentActionButton.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -1950,12 +2261,12 @@ async function processBulkStudentWithComment(student, commentHtml) {
 
   const activeDialog = await waitForBulkDialog();
   if (!activeDialog) {
-    throw new Error(`Khong mo duoc hop thoai nhan xet cho ${student.name}`);
+    throw new Error(`Không mở được hộp thoại nhận xét cho ${student.name}`);
   }
 
   const editor = await waitForBulkEditor(activeDialog);
   if (!editor) {
-    throw new Error(`Khong tim thay o nhan xet cho ${student.name}`);
+    throw new Error(`Không tìm thấy ô nhận xét cho ${student.name}`);
   }
 
   updateBulkEditorContent(editor, commentHtml);
@@ -1976,7 +2287,7 @@ async function processBulkStudentWithComment(student, commentHtml) {
   }
 
   if (!clickedSave && isBulkDialogOpen(activeDialog)) {
-    throw new Error(`Khong tim thay nut luu cho ${student.name}`);
+    throw new Error(`Không tìm thấy nút lưu cho ${student.name}`);
   }
 
   if (isBulkDialogOpen(activeDialog)) {
@@ -2002,13 +2313,25 @@ async function runBulkAutoAll() {
   snapshotBulkKeywordDrafts();
   const students = getStudentsForBulkPanel();
   if (!students.length) {
-    alert('Khong tim thay danh sach hoc sinh.');
+    alert('Không tìm thấy danh sách học sinh.');
     return;
   }
 
   bulkRunInProgress = true;
   runButton.disabled = true;
   runButton.style.opacity = '0.6';
+  const startedAt = Date.now();
+  let runPhaseText = 'Đang chạy';
+  const updateRunButtonText = () => {
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    runButton.textContent = `${runPhaseText} (${formatElapsedTime(elapsedSeconds)})`;
+  };
+  const setRunPhase = (phaseText) => {
+    runPhaseText = String(phaseText || 'Đang chạy');
+    updateRunButtonText();
+  };
+  const runTimerId = window.setInterval(updateRunButtonText, 1000);
+  setRunPhase('Đang chuẩn bị dữ liệu');
 
   let successCount = 0;
   let skippedCount = 0;
@@ -2033,23 +2356,24 @@ async function runBulkAutoAll() {
     }
 
     if (!batchItems.length) {
-      alert('Khong co hoc sinh nao co keywords de tao nhan xet.');
+      alert('Không có học sinh nào có keywords để tạo nhận xét.');
       return;
     }
 
-    runButton.textContent = `Dang goi AI 1 lan cho ${batchItems.length} hoc sinh...`;
+    setRunPhase(`Đang tạo nhận xét cho ${batchItems.length} học sinh`);
 
     let lessonContent = String(bulkLessonContentDraft || '').trim();
     if (!lessonContent) {
-      runButton.textContent = `Dang lay noi dung bai hoc ${bulkLessonPickerState.course} - Buoi ${bulkLessonPickerState.lesson}...`;
+      setRunPhase(`Đang lấy nội dung bài học ${bulkLessonPickerState.course} - Buổi ${bulkLessonPickerState.lesson}`);
       try {
         const fetched = await fetchAndFillBulkLessonContent({ silent: true });
         lessonContent = String(fetched || '').trim();
       } catch (fetchError) {}
+      setRunPhase(`Đang tạo nhận xét cho ${batchItems.length} học sinh`);
     }
 
     if (!lessonContent) {
-      setBulkLessonStatus('Chua co noi dung bai hoc tu API. Van tiep tuc tao nhan xet tu keywords.', true);
+      setBulkLessonStatus('Chưa có nội dung bài học từ API. Vẫn tiếp tục tạo nhận xét từ keywords.', true);
     }
 
     let batchResult;
@@ -2059,7 +2383,7 @@ async function runBulkAutoAll() {
       generatedCount = Object.keys(batchResult.commentsByStudentId || {}).length;
     } catch (batchError) {
       const message = String(batchError?.message || batchError || 'Unknown error');
-      throw new Error(`Loi tao batch nhan xet: ${message}`);
+      throw new Error(`Lỗi tạo batch nhận xét: ${message}`);
     }
 
     if (batchResult.missingStudentIds.length > 0) {
@@ -2067,7 +2391,7 @@ async function runBulkAutoAll() {
         const item = batchItems.find((candidate) => candidate.studentId === studentId);
         if (!item) return;
         failedCount += 1;
-        failedDetails.push(`${item.student.name}: AI khong tra ve nhan xet`);
+        failedDetails.push(`${item.student.name}: AI không trả về nhận xét`);
       });
     }
 
@@ -2075,7 +2399,7 @@ async function runBulkAutoAll() {
       const commentHtml = batchResult.commentsByStudentId[item.studentId];
       if (!commentHtml) continue;
 
-      runButton.textContent = `Dang dan: ${item.student.name}`;
+      setRunPhase(`Đang dán: ${item.student.name}`);
       try {
         await processBulkStudentWithComment(item.student, commentHtml);
         successCount += 1;
@@ -2086,33 +2410,34 @@ async function runBulkAutoAll() {
         const errorMessage = String(error?.message || error || 'Unknown error');
         failedDetails.push(`${item.student.name}: ${errorMessage}`);
         console.error('Bulk process error', item.student.name, error);
-        showNotificationToast(`Loi ${item.student.name}: ${errorMessage}`);
+        showNotificationToast(`Lỗi ${item.student.name}: ${errorMessage}`);
       }
     }
   } finally {
+    window.clearInterval(runTimerId);
     runButton.disabled = false;
     runButton.style.opacity = '1';
-    runButton.textContent = 'Viet nhan xet tat ca (AI 1 lan goi)';
+    runButton.textContent = 'Bắt đầu nhận xét';
     bulkRunInProgress = false;
   }
 
   const summaryLines = [
-    'Hoan thanh.',
-    `- So hoc sinh AI da tao text: ${generatedCount}`,
-    `- Da xu ly: ${successCount}`,
-    `- Bo qua (khong co keywords): ${skippedCount}`,
-    `- Loi: ${failedCount}`
+    'Hoàn thành.',
+    `- Số học sinh AI đã tạo text: ${generatedCount}`,
+    `- Đã xử lý: ${successCount}`,
+    `- Bỏ qua (không có keywords): ${skippedCount}`,
+    `- Lỗi: ${failedCount}`
   ];
   if (usedModel) {
-    summaryLines.splice(1, 0, `- Model da dung: ${usedModel}`);
+    summaryLines.splice(1, 0, `- Model đã dùng: ${usedModel}`);
   }
   if (failedDetails.length > 0) {
     const limitedDetails = failedDetails.slice(0, 5);
-    summaryLines.push('', 'Chi tiet loi:');
+    summaryLines.push('', 'Chi tiết lỗi:');
     limitedDetails.forEach((item) => summaryLines.push(`- ${item}`));
     const remainingCount = failedDetails.length - limitedDetails.length;
     if (remainingCount > 0) {
-      summaryLines.push(`- ... va ${remainingCount} loi khac`);
+      summaryLines.push(`- ... và ${remainingCount} lỗi khác`);
     }
   }
   alert(summaryLines.join('\n'));
