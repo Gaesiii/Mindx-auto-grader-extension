@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MindX Auto Grader Extension",
-  "version": "3.3",
-  "version_name": "3.3",
+  "version": "3.4",
+  "version_name": "3.4",
   "description": "Chrome extension ho tro cham diem, AI comment, bao cao Zalo va trial task cho MindX.",
   "permissions": [
     "storage",

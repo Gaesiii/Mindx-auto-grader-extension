@@ -25,6 +25,8 @@ const ACP_BULK_TRANSIENT_RETRY_COUNT = 2;
 const ACP_BULK_DIALOG_WAIT_TIMEOUT_MS = 12000;
 const ACP_BULK_EDITOR_WAIT_TIMEOUT_MS = 12000;
 const ACP_BULK_DIALOG_CLOSE_TIMEOUT_MS = 6000;
+const ACP_BULK_MANUAL_SAVE_TIMEOUT_MS = 10 * 60 * 1000;
+const ACP_BULK_SKIP_BTN_ID = 'acp-bulk-skip-current';
 const BULK_TAG_TYPE_GOOD = 'good';
 const BULK_TAG_TYPE_BAD = 'bad';
 const BULK_DEFAULT_GOOD_TAGS = [
@@ -77,6 +79,11 @@ let bulkLessonPickerState = { subject: 'Scratch', course: 'SB', lesson: 1 };
 let bulkLessonStatusText = 'Chọn môn/khóa/buổi rồi bấm Lấy nội dung API.';
 let bulkLessonStatusIsError = false;
 let bulkRunInProgress = false;
+let bulkManualWait = {
+  active: false,
+  skipped: false,
+  resolve: null
+};
 
 const CLOUD_APIS = [
   atob("aHR0cHM6Ly82OWI5NjZlZWU2OTY1M2ZmZTZhNzk2ZDQubW9ja2FwaS5pby90ZW1wbGF0ZXM="),
@@ -287,6 +294,10 @@ function normalizeVietnameseText(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
+}
+
+function normalizeStudentNameForMatch(value) {
+  return normalizeVietnameseText(value).replace(/\s+/g, ' ').trim();
 }
 
 function escapeRegExp(value) {
@@ -2211,31 +2222,125 @@ function normalizeCommentHtml(rawText) {
   return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
 }
 
+function resolveBatchItemByStudentName(rawName, batchItems) {
+  const target = normalizeStudentNameForMatch(rawName);
+  if (!target || !Array.isArray(batchItems) || !batchItems.length) {
+    return { status: 'none', item: null, matches: [] };
+  }
+
+  const exactMatches = batchItems.filter(
+    (item) => normalizeStudentNameForMatch(item?.student?.name) === target
+  );
+  if (exactMatches.length === 1) {
+    return { status: 'matched', item: exactMatches[0], matches: exactMatches };
+  }
+  if (exactMatches.length > 1) {
+    return { status: 'ambiguous', item: null, matches: exactMatches };
+  }
+
+  const looseMatches = batchItems.filter((item) => {
+    const name = normalizeStudentNameForMatch(item?.student?.name);
+    if (!name) return false;
+    return name.includes(target) || target.includes(name);
+  });
+  if (looseMatches.length === 1) {
+    return { status: 'matched', item: looseMatches[0], matches: looseMatches };
+  }
+  if (looseMatches.length > 1) {
+    return { status: 'ambiguous', item: null, matches: looseMatches };
+  }
+
+  return { status: 'none', item: null, matches: [] };
+}
+
 function mapBatchCommentsByStudentId(parsedJson, batchItems) {
   const entries = normalizeBulkCommentEntries(parsedJson);
   const commentsByStudentId = {};
+  const knownIds = new Set(
+    (Array.isArray(batchItems) ? batchItems : [])
+      .map((item) => String(item?.studentId || '').trim())
+      .filter(Boolean)
+  );
+  const ambiguousStudentIds = new Set();
+  const unmappedEntries = [];
 
-  entries.forEach((entry) => {
+  entries.forEach((entry, entryIndex) => {
     if (!entry || typeof entry !== 'object') return;
     const explicitId = String(entry.student_id || entry.studentId || entry.id || '').trim();
     const rawName = String(entry.student_name || entry.studentName || entry.name || '').trim();
     const html = normalizeCommentHtml(entry.comment || entry.text || entry.content || entry.html || '');
     if (!html) return;
 
-    let mappedId = explicitId;
-    if (!mappedId && rawName) {
-      const matched = batchItems.find((item) => item.student.name === rawName);
-      if (matched) mappedId = matched.studentId;
+    let mappedId = '';
+    let mapReason = '';
+
+    if (explicitId && knownIds.has(explicitId)) {
+      mappedId = explicitId;
+      mapReason = 'student_id';
+    } else {
+      const nameResult = resolveBatchItemByStudentName(rawName, batchItems);
+      if (nameResult.status === 'matched' && nameResult.item) {
+        mappedId = String(nameResult.item.studentId || '').trim();
+        mapReason = explicitId ? 'name_after_unknown_id' : 'student_name';
+      } else if (nameResult.status === 'ambiguous') {
+        nameResult.matches.forEach((item) => {
+          const id = String(item?.studentId || '').trim();
+          if (id) ambiguousStudentIds.add(id);
+        });
+        unmappedEntries.push({
+          entryIndex,
+          reason: 'ambiguous_name',
+          explicitId,
+          rawName
+        });
+        return;
+      } else {
+        unmappedEntries.push({
+          entryIndex,
+          reason: explicitId && !knownIds.has(explicitId) ? 'unknown_student_id' : 'unmatched_name',
+          explicitId,
+          rawName
+        });
+        return;
+      }
     }
+
     if (!mappedId) return;
+
+    if (Object.prototype.hasOwnProperty.call(commentsByStudentId, mappedId)) {
+      if (commentsByStudentId[mappedId] !== html) {
+        delete commentsByStudentId[mappedId];
+        ambiguousStudentIds.add(mappedId);
+        unmappedEntries.push({
+          entryIndex,
+          reason: 'conflicting_comment',
+          explicitId: mappedId,
+          rawName,
+          mapReason
+        });
+      }
+      return;
+    }
+
     commentsByStudentId[mappedId] = html;
   });
 
-  const missingStudentIds = batchItems
-    .map((item) => item.studentId)
-    .filter((studentId) => !commentsByStudentId[studentId]);
+  ambiguousStudentIds.forEach((studentId) => {
+    if (Object.prototype.hasOwnProperty.call(commentsByStudentId, studentId)) {
+      delete commentsByStudentId[studentId];
+    }
+  });
 
-  return { commentsByStudentId, missingStudentIds };
+  const missingStudentIds = (Array.isArray(batchItems) ? batchItems : [])
+    .map((item) => item.studentId)
+    .filter((studentId) => studentId && !commentsByStudentId[studentId]);
+
+  return {
+    commentsByStudentId,
+    missingStudentIds,
+    ambiguousStudentIds: Array.from(ambiguousStudentIds),
+    unmappedEntries
+  };
 }
 
 async function generateBulkCommentsBatch(batchItems, lessonContent) {
@@ -2260,14 +2365,156 @@ async function generateBulkCommentsBatch(batchItems, lessonContent) {
   });
 
   const parsedJson = parseBulkJsonResponse(aiResult.aiText);
-  const { commentsByStudentId, missingStudentIds } = mapBatchCommentsByStudentId(parsedJson, batchItems);
-  if (!Object.keys(commentsByStudentId).length) {
-    throw new Error('AI không trả về nhận xét hợp lệ cho học sinh nào.');
+  const mapped = mapBatchCommentsByStudentId(parsedJson, batchItems);
+  if (!Object.keys(mapped.commentsByStudentId).length) {
+    const ambiguousHint = mapped.ambiguousStudentIds?.length
+      ? ` (tên mơ hồ: ${mapped.ambiguousStudentIds.length})`
+      : '';
+    const unmappedHint = mapped.unmappedEntries?.length
+      ? ` (không map được: ${mapped.unmappedEntries.length})`
+      : '';
+    throw new Error(`AI không trả về nhận xét hợp lệ cho học sinh nào.${ambiguousHint}${unmappedHint}`);
   }
-  return { commentsByStudentId, missingStudentIds, model: aiResult.candidate.model };
+  return {
+    commentsByStudentId: mapped.commentsByStudentId,
+    missingStudentIds: mapped.missingStudentIds,
+    ambiguousStudentIds: mapped.ambiguousStudentIds || [],
+    unmappedEntries: mapped.unmappedEntries || [],
+    model: aiResult.candidate.model
+  };
 }
 
-async function processBulkStudentWithComment(student, commentHtml) {
+function dialogLikelyBelongsToStudent(dialog, studentName, allStudentNames = []) {
+  if (!(dialog instanceof HTMLElement)) return false;
+  const dialogText = normalizeStudentNameForMatch(dialog.innerText || dialog.textContent || '');
+  const name = normalizeStudentNameForMatch(studentName);
+  if (!name) return false;
+  if (!dialogText) return true;
+  if (dialogText.includes(name)) return true;
+
+  const tokens = name.split(' ').filter((token) => token.length >= 3);
+  if (tokens.length >= 2) {
+    const lastTwo = tokens.slice(-2).join(' ');
+    if (dialogText.includes(lastTwo)) return true;
+  }
+
+  // Fail-closed only when dialog clearly mentions another known student.
+  const otherNames = (Array.isArray(allStudentNames) ? allStudentNames : [])
+    .map((candidate) => normalizeStudentNameForMatch(candidate))
+    .filter((candidate) => candidate && candidate !== name);
+
+  const mentionsOtherStudent = otherNames.some((otherName) => {
+    if (!dialogText.includes(otherName)) return false;
+    // Avoid short false positives when names share tokens.
+    return otherName.length >= 5 || dialogText.includes(` ${otherName} `);
+  });
+  if (mentionsOtherStudent) return false;
+
+  // No positive match and no conflicting name: allow (button targeting is primary signal).
+  return true;
+}
+
+function ensureNoOpenBulkDialogSyncClose() {
+  const dialog = getBulkActiveDialog();
+  if (!dialog) return Promise.resolve();
+  return (async () => {
+    await waitForBulkDialogClosed(dialog, 1500);
+    if (!isBulkDialogOpen(dialog)) return;
+
+    const closeButton = getBulkCloseButton(dialog) || getBulkCloseButton(document);
+    if (closeButton) {
+      closeButton.click();
+    } else {
+      const escEvent = new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true });
+      dialog.dispatchEvent(escEvent);
+      document.dispatchEvent(escEvent);
+    }
+    await waitForBulkDialogClosed(dialog, 3000);
+
+    if (getBulkActiveDialog()) {
+      throw new Error('Hộp thoại nhận xét vẫn đang mở. Hãy đóng/lưu xong trước khi tiếp tục học sinh tiếp theo.');
+    }
+  })();
+}
+
+function cleanupBulkSkipButton() {
+  const skipBtn = document.getElementById(ACP_BULK_SKIP_BTN_ID);
+  if (skipBtn) skipBtn.remove();
+}
+
+function ensureBulkSkipButton(studentName) {
+  const panel = getBulkPanel();
+  if (!panel) return;
+
+  let skipBtn = document.getElementById(ACP_BULK_SKIP_BTN_ID);
+  if (!(skipBtn instanceof HTMLButtonElement)) {
+    skipBtn = document.createElement('button');
+    skipBtn.id = ACP_BULK_SKIP_BTN_ID;
+    skipBtn.type = 'button';
+    skipBtn.style.cssText = 'width:100%; margin-top:8px; border:1px solid #dc2626; border-radius:7px; background:#fff; color:#b91c1c; padding:9px; font-size:12px; font-weight:700; cursor:pointer;';
+    const footer = panel.querySelector('#acp-bulk-run')?.parentElement;
+    if (footer) footer.appendChild(skipBtn);
+    else panel.appendChild(skipBtn);
+    skipBtn.addEventListener('click', () => {
+      if (!bulkManualWait.active) return;
+      bulkManualWait.skipped = true;
+      if (typeof bulkManualWait.resolve === 'function') {
+        const resolve = bulkManualWait.resolve;
+        bulkManualWait.resolve = null;
+        resolve({ outcome: 'skipped' });
+      }
+    });
+  }
+
+  skipBtn.textContent = `Bỏ qua học sinh này (${studentName})`;
+  skipBtn.disabled = false;
+  skipBtn.style.opacity = '1';
+}
+
+async function waitForManualSaveOrSkip(dialog, studentName, timeoutMs = ACP_BULK_MANUAL_SAVE_TIMEOUT_MS) {
+  showNotificationToast(`Đã dán nhận xét cho ${studentName}. Hãy tự bấm Lưu trên LMS — extension không auto-lưu.`);
+  ensureBulkSkipButton(studentName);
+
+  return new Promise((resolve) => {
+    bulkManualWait = {
+      active: true,
+      skipped: false,
+      resolve
+    };
+
+    const startedAt = Date.now();
+    const poll = async () => {
+      while (Date.now() - startedAt < timeoutMs) {
+        if (bulkManualWait.skipped) {
+          cleanupBulkSkipButton();
+          bulkManualWait.active = false;
+          bulkManualWait.resolve = null;
+          resolve({ outcome: 'skipped' });
+          return;
+        }
+        if (!isBulkDialogOpen(dialog)) {
+          cleanupBulkSkipButton();
+          bulkManualWait.active = false;
+          bulkManualWait.resolve = null;
+          resolve({ outcome: 'closed' });
+          return;
+        }
+        await sleep(250);
+      }
+
+      cleanupBulkSkipButton();
+      bulkManualWait.active = false;
+      bulkManualWait.resolve = null;
+      resolve({ outcome: 'timeout' });
+    };
+
+    poll();
+  });
+}
+
+async function processBulkStudentWithComment(student, commentHtml, options = {}) {
+  await ensureNoOpenBulkDialogSyncClose();
+
   const studentActionButton = findBulkStudentActionButton(student);
   if (!studentActionButton) {
     throw new Error(`Không tìm thấy nút "Nhận xét học sinh" cho ${student.name}`);
@@ -2281,43 +2528,44 @@ async function processBulkStudentWithComment(student, commentHtml) {
     throw new Error(`Không mở được hộp thoại nhận xét cho ${student.name}`);
   }
 
+  const allStudentNames = Array.isArray(options.allStudentNames)
+    ? options.allStudentNames
+    : getStudentsForBulkPanel().map((item) => item.name);
+
+  if (!dialogLikelyBelongsToStudent(activeDialog, student.name, allStudentNames)) {
+    throw new Error(
+      `Dialog đang mở có vẻ thuộc học sinh khác, không phải "${student.name}". Đã dừng dán để tránh spam nhầm.`
+    );
+  }
+
   const editor = await waitForBulkEditor(activeDialog);
   if (!editor) {
     throw new Error(`Không tìm thấy ô nhận xét cho ${student.name}`);
   }
 
   updateBulkEditorContent(editor, commentHtml);
+  await sleep(300);
 
-  await sleep(700);
-
-  let clickedSave = false;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (!isBulkDialogOpen(activeDialog)) break;
-    const saveButton = getBulkSaveButton(activeDialog) || getBulkSaveButton(document);
-    if (!saveButton) {
-      await sleep(500);
-      continue;
+  const waitResult = await waitForManualSaveOrSkip(activeDialog, student.name);
+  if (waitResult.outcome === 'skipped') {
+    if (isBulkDialogOpen(activeDialog)) {
+      const closeButton = getBulkCloseButton(activeDialog) || getBulkCloseButton(document);
+      if (closeButton) closeButton.click();
+      else {
+        const escEvent = new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true });
+        activeDialog.dispatchEvent(escEvent);
+        document.dispatchEvent(escEvent);
+      }
+      await waitForBulkDialogClosed(activeDialog);
     }
-    saveButton.click();
-    clickedSave = true;
-    await sleep(900);
+    return { status: 'skipped' };
   }
 
-  if (!clickedSave && isBulkDialogOpen(activeDialog)) {
-    throw new Error(`Không tìm thấy nút lưu cho ${student.name}`);
+  if (waitResult.outcome === 'timeout') {
+    throw new Error(`Hết thời gian chờ bạn bấm Lưu cho ${student.name}`);
   }
 
-  if (isBulkDialogOpen(activeDialog)) {
-    const closeButton = getBulkCloseButton(activeDialog) || getBulkCloseButton(document);
-    if (closeButton) {
-      closeButton.click();
-    } else {
-      const escEvent = new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true });
-      activeDialog.dispatchEvent(escEvent);
-      document.dispatchEvent(escEvent);
-    }
-    await waitForBulkDialogClosed(activeDialog);
-  }
+  return { status: 'closed' };
 }
 
 async function runBulkAutoAll() {
@@ -2351,7 +2599,8 @@ async function runBulkAutoAll() {
   setRunPhase('Đang chuẩn bị dữ liệu');
 
   let successCount = 0;
-  let skippedCount = 0;
+  let skippedNoKeywordCount = 0;
+  let skippedManualCount = 0;
   let failedCount = 0;
   const failedDetails = [];
   let usedModel = '';
@@ -2362,7 +2611,7 @@ async function runBulkAutoAll() {
     for (const student of students) {
       const keyword = String(bulkKeywordDrafts[student.key] || '').trim();
       if (!keyword) {
-        skippedCount += 1;
+        skippedNoKeywordCount += 1;
         continue;
       }
       batchItems.push({
@@ -2408,7 +2657,12 @@ async function runBulkAutoAll() {
         const item = batchItems.find((candidate) => candidate.studentId === studentId);
         if (!item) return;
         failedCount += 1;
-        failedDetails.push(`${item.student.name}: AI không trả về nhận xét`);
+        const ambiguous = (batchResult.ambiguousStudentIds || []).includes(studentId);
+        failedDetails.push(
+          ambiguous
+            ? `${item.student.name}: Tên mơ hồ / không map chắc chắn (đã bỏ qua, không auto dán)`
+            : `${item.student.name}: AI không trả về nhận xét map được`
+        );
       });
     }
 
@@ -2416,12 +2670,19 @@ async function runBulkAutoAll() {
       const commentHtml = batchResult.commentsByStudentId[item.studentId];
       if (!commentHtml) continue;
 
-      setRunPhase(`Đang dán: ${item.student.name}`);
+      setRunPhase(`Chờ bạn Lưu: ${item.student.name}`);
       try {
-        await processBulkStudentWithComment(item.student, commentHtml);
+        const processResult = await processBulkStudentWithComment(item.student, commentHtml, {
+          allStudentNames: batchItems.map((candidate) => candidate.student.name)
+        });
+        if (processResult?.status === 'skipped') {
+          skippedManualCount += 1;
+          showNotificationToast(`Đã bỏ qua ${item.student.name}`);
+          continue;
+        }
         successCount += 1;
         const modelSuffix = usedModel ? ` (${usedModel})` : '';
-        showNotificationToast(`Xong ${item.student.name}${modelSuffix}`);
+        showNotificationToast(`Đã xong ${item.student.name}${modelSuffix}`);
       } catch (error) {
         failedCount += 1;
         const errorMessage = String(error?.message || error || 'Unknown error');
@@ -2431,6 +2692,8 @@ async function runBulkAutoAll() {
       }
     }
   } finally {
+    cleanupBulkSkipButton();
+    bulkManualWait = { active: false, skipped: false, resolve: null };
     window.clearInterval(runTimerId);
     runButton.disabled = false;
     runButton.style.opacity = '1';
@@ -2439,11 +2702,12 @@ async function runBulkAutoAll() {
   }
 
   const summaryLines = [
-    'Hoàn thành.',
+    'Hoàn thành (chế độ semi-auto: chỉ dán, không auto-Lưu).',
     `- Số học sinh AI đã tạo text: ${generatedCount}`,
-    `- Đã xử lý: ${successCount}`,
-    `- Bỏ qua (không có keywords): ${skippedCount}`,
-    `- Lỗi: ${failedCount}`
+    `- Đã dán + bạn đã đóng/lưu dialog: ${successCount}`,
+    `- Bỏ qua (không có keywords): ${skippedNoKeywordCount}`,
+    `- Bỏ qua thủ công khi chờ Lưu: ${skippedManualCount}`,
+    `- Lỗi / không map được: ${failedCount}`
   ];
   if (usedModel) {
     summaryLines.splice(1, 0, `- Model đã dùng: ${usedModel}`);
