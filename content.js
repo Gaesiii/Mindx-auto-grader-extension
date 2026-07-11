@@ -941,14 +941,15 @@ function ensureDialogIdentity(dialog) {
 function getEvaluationContext() {
   const radios = getVisibleEvaluationRadios();
   const editors = getVisibleQuillEditors();
-  if (radios.length < ACP_MIN_RADIO_COUNT || editors.length === 0) return null;
+  const canAutoScore = radios.length >= ACP_MIN_RADIO_COUNT;
+  if (!canAutoScore && editors.length === 0) return null;
 
   const anchorEditor = editors[editors.length - 1];
   const dialog = anchorEditor.closest('[role="dialog"]');
   const container = dialog || document.body;
   const dialogId = ensureDialogIdentity(dialog);
-  const key = `${location.pathname}|${dialogId}|r${radios.length}|e${editors.length}`;
-  return { radios, editors, container, key };
+  const key = `${location.pathname}|${dialogId}|s${canAutoScore ? 1 : 0}|r${radios.length}|e${editors.length}`;
+  return { radios, editors, container, key, canAutoScore };
 }
 
 function getEvaluationPanel() {
@@ -993,10 +994,24 @@ function closeEvaluationPanel(panel) {
   showEvaluationReopenButton();
 }
 
-function buildEvaluationPanel(contextKey) {
+function buildEvaluationPanel(context) {
+  const contextKey = typeof context === 'string' ? context : context.key;
+  const canAutoScore = typeof context === 'string' ? true : Boolean(context.canAutoScore);
+  const scoreControlsHtml = canAutoScore
+    ? `
+    <div style="display:flex; gap:8px; margin-bottom:15px;">
+      <button id="btn-gioi" type="button" style="flex:1; background:#28a745; color:#fff; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">Gioi</button>
+      <button id="btn-kha" type="button" style="flex:1; background:#f6c000; color:#111; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">Kha</button>
+      <button id="btn-tb" type="button" style="flex:1; background:#dc3545; color:#fff; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">TB</button>
+    </div>`
+    : '';
+  const aiPanelStyle = canAutoScore
+    ? 'border-top:1px solid #eee; padding-top:12px;'
+    : 'padding-top:0;';
   const panel = document.createElement('div');
   panel.id = ACP_EVAL_PANEL_ID;
   panel.dataset.contextKey = contextKey;
+  panel.dataset.canAutoScore = canAutoScore ? '1' : '0';
   panel.dataset.closed = '0';
   panel.style.cssText = `position: fixed; top: 80px; right: 20px; width: min(320px, calc(100vw - 40px)); background: #ffffff; border-radius: 10px; box-shadow: 0 8px 25px rgba(0,0,0,0.15); z-index: 2147483647; padding: 14px; font-family: Arial, sans-serif; border: 1px solid #e0e0e0;`;
   panel.innerHTML = `
@@ -1004,12 +1019,8 @@ function buildEvaluationPanel(contextKey) {
       <h4 style="margin:0; color:#1a73e8; font-size:15px;">Auto Tick Diem LMS</h4>
       <button id="acp-eval-close" type="button" style="background:transparent; border:none; color:#6b7280; font-size:12px; cursor:pointer;">Dong</button>
     </div>
-    <div style="display:flex; gap:8px; margin-bottom:15px;">
-      <button id="btn-gioi" type="button" style="flex:1; background:#28a745; color:#fff; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">Gioi</button>
-      <button id="btn-kha" type="button" style="flex:1; background:#f6c000; color:#111; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">Kha</button>
-      <button id="btn-tb" type="button" style="flex:1; background:#dc3545; color:#fff; border:none; padding:8px; border-radius:6px; cursor:pointer; font-weight:bold;">TB</button>
-    </div>
-    <div style="border-top:1px solid #eee; padding-top:12px;">
+    ${scoreControlsHtml}
+    <div style="${aiPanelStyle}">
       <label style="font-size:12px; font-weight:bold; color:#555;">Tao nhan xet chung (AI):</label>
       <input type="text" id="ai-keywords" placeholder="VD: hieu bai, lam game nhanh..." style="width:100%; padding:10px; margin-top:4px; border:1px solid #ccc; border-radius:6px; box-sizing:border-box; outline:none; font-size:13px; color:#333;">
       <button id="btn-gen-ai" type="button" style="width:100%; background:#1a73e8; color:#fff; border:none; padding:10px; border-radius:6px; cursor:pointer; margin-top:10px; font-weight:bold; transition:0.2s;">Nho AI viet nhan xet</button>
@@ -1021,9 +1032,9 @@ function buildEvaluationPanel(contextKey) {
   });
 
   panel.querySelector('#acp-eval-close').addEventListener('click', () => closeEvaluationPanel(panel));
-  panel.querySelector('#btn-gioi').addEventListener('click', () => fillReactScores('gioi'));
-  panel.querySelector('#btn-kha').addEventListener('click', () => fillReactScores('kha'));
-  panel.querySelector('#btn-tb').addEventListener('click', () => fillReactScores('tb'));
+  panel.querySelector('#btn-gioi')?.addEventListener('click', () => fillReactScores('gioi'));
+  panel.querySelector('#btn-kha')?.addEventListener('click', () => fillReactScores('kha'));
+  panel.querySelector('#btn-tb')?.addEventListener('click', () => fillReactScores('tb'));
   panel.querySelector('#btn-gen-ai').addEventListener('click', generateAIComment);
   const evalDragHandle = panel.querySelector('#acp-eval-drag-handle');
   if (evalDragHandle instanceof HTMLElement) {
@@ -1043,7 +1054,7 @@ function scheduleEvaluationPanelRefresh() {
 }
 
 function injectEvaluationPanel() {
-  const panel = getEvaluationPanel();
+  let panel = getEvaluationPanel();
 
   if (!isExtensionEnabled) {
     if (panel) panel.remove();
@@ -1058,8 +1069,14 @@ function injectEvaluationPanel() {
     return;
   }
 
+  const expectedScoreMode = context.canAutoScore ? '1' : '0';
+  if (panel && panel.dataset.canAutoScore !== expectedScoreMode) {
+    panel.remove();
+    panel = null;
+  }
+
   if (!panel) {
-    const createdPanel = buildEvaluationPanel(context.key);
+    const createdPanel = buildEvaluationPanel(context);
     context.container.appendChild(createdPanel);
     hideEvaluationReopenButton();
     return;
